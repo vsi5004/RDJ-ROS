@@ -6,22 +6,67 @@
   <title>RDJ Vinyl Robot</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 1rem; }
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee;
+           padding: 1rem; max-width: 1100px; margin: 0 auto; }
     h1 { font-size: 1.4rem; margin-bottom: 1rem; color: #f90; }
     .card { background: #1e1e1e; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-    .card h2 { font-size: 1rem; color: #aaa; margin-bottom: 0.5rem; }
-    .status-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .card h2 { font-size: 1rem; color: #aaa; margin-bottom: 0.75rem; }
+
+    /* Status grid */
+    .status-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
     .status-item { flex: 1; min-width: 80px; }
-    .status-label { font-size: 0.7rem; color: #777; }
+    .status-label { font-size: 0.7rem; color: #777; text-transform: uppercase; }
     .status-value { font-size: 1.1rem; font-weight: bold; }
-    .btn { background: #333; border: none; color: #eee; padding: 0.6rem 1rem;
-           border-radius: 6px; cursor: pointer; font-size: 0.9rem; margin: 0.2rem; }
-    .btn:hover { background: #f90; color: #000; }
-    .btn.danger { border: 1px solid #f44; }
-    .btn.danger:hover { background: #f44; }
+    .status-value.ok { color: #4f4; }
+    .status-value.warn { color: #fa0; }
+    .status-value.bad { color: #f44; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+           background: #444; margin-right: 4px; }
+    .dot.on { background: #4f4; }
+    .dot.moving { background: #fa0; }
+    .dot.estop { background: #f44; }
+
+    /* Fault banner */
+    #fault-banner { display: none; background: #f44; color: #fff; padding: 0.5rem 1rem;
+                    border-radius: 6px; margin-bottom: 0.75rem; font-weight: bold; }
+
+    /* Buttons */
+    .btn { background: #333; border: 1px solid #444; color: #eee; padding: 0.5rem 0.8rem;
+           border-radius: 6px; cursor: pointer; font-size: 0.85rem; margin: 0.15rem; }
+    .btn:hover:not(:disabled) { background: #f90; color: #000; border-color: #f90; }
+    .btn.danger { border-color: #f44; }
+    .btn.danger:hover:not(:disabled) { background: #f44; border-color: #f44; }
+    .btn.small { padding: 0.35rem 0.6rem; font-size: 0.8rem; }
+    .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Jog panel */
+    .jog-row { display: flex; align-items: center; gap: 0.5rem;
+               margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .jog-label { width: 60px; font-size: 0.85rem; color: #aaa; flex-shrink: 0; }
+    .jog-pos { font-family: monospace; font-size: 1rem; font-weight: bold;
+               min-width: 70px; text-align: center; color: #f90; }
+    .jog-sep { flex: 1; }
+    .pos-snippet { background: #111; border: 1px solid #333; border-radius: 6px;
+                   padding: 0.6rem 1rem; font-family: monospace; font-size: 0.85rem;
+                   color: #4f4; margin-top: 0.75rem; }
+
+    /* Servo sliders */
+    .slider-row { display: flex; align-items: center; gap: 0.75rem;
+                  margin-bottom: 0.6rem; }
+    .slider-label { width: 170px; font-size: 0.82rem; color: #aaa; flex-shrink: 0; }
+    .slider-row input[type=range] { flex: 1; accent-color: #f90; }
+    .slider-val { font-family: monospace; font-size: 0.9rem; font-weight: bold;
+                  min-width: 60px; text-align: right; color: #f90; }
+    .config-hint { font-size: 0.72rem; color: #555; margin-top: 0.5rem; line-height: 1.6; }
+
+    /* Progress */
     progress { width: 100%; height: 12px; border-radius: 6px; }
+
+    /* Connection */
     .connected { color: #4f4; }
     .disconnected { color: #f44; }
+
+    /* Log */
     #log { font-family: monospace; font-size: 0.75rem; color: #888;
            height: 80px; overflow-y: auto; border-top: 1px solid #333; padding-top: 0.5rem; }
   </style>
@@ -29,24 +74,17 @@
 <body>
   <h1>🎵 RDJ Vinyl Robot</h1>
 
+  <!-- Connection -->
   <div class="card">
     <h2>Connection <span id="conn-status" class="disconnected">● Disconnected</span></h2>
     <small id="ws-url"></small>
   </div>
 
+  <!-- Status -->
   <div class="card">
-    <h2>Playback</h2>
-    <div class="status-row">
-      <div class="status-item">
-        <div class="status-label">PROGRESS</div>
-        <progress id="progress-bar" value="0" max="1"></progress>
-        <div id="progress-val">0%</div>
-      </div>
-    </div>
-  </div>
+    <h2>Status</h2>
+    <div id="fault-banner">⚠ FAULT: <span id="fault-msg"></span></div>
 
-  <div class="card">
-    <h2>Axis Positions</h2>
     <div class="status-row">
       <div class="status-item">
         <div class="status-label">X (mm)</div>
@@ -61,25 +99,151 @@
         <div class="status-value" id="a-pos">—</div>
       </div>
       <div class="status-item">
-        <div class="status-label">HOMED</div>
-        <div class="status-value" id="homed">—</div>
+        <div class="status-label">Homed</div>
+        <div class="status-value" id="homed-flags">—</div>
       </div>
       <div class="status-item">
-        <div class="status-label">SAFETY</div>
+        <div class="status-label">Safety</div>
         <div class="status-value" id="safety-scale">—</div>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <div class="status-item">
+        <div class="status-label">X ToF</div>
+        <div class="status-value" id="x-tof">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Z ToF</div>
+        <div class="status-value" id="z-tof">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Pincher ToF</div>
+        <div class="status-value" id="pincher-tof">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Moving</div>
+        <div class="status-value" id="moving-flags">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">E-Stop</div>
+        <div class="status-value" id="estop-indicator">—</div>
       </div>
     </div>
   </div>
 
+  <!-- Playback -->
+  <div class="card">
+    <h2>Playback</h2>
+    <div class="status-label">PROGRESS</div>
+    <progress id="progress-bar" value="0" max="1"></progress>
+    <div id="progress-val" style="font-size:0.85rem;color:#aaa;margin-top:0.25rem">0%</div>
+  </div>
+
+  <!-- Manual Jog -->
+  <div class="card">
+    <h2>Manual Jog <span style="font-size:0.75rem;color:#555">(requires homed)</span></h2>
+
+    <div class="jog-row">
+      <span class="jog-label">X (mm)</span>
+      <button class="btn small jog-btn" onclick="jogAxis('x',-100)">−100</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',-50)">−50</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',-10)">−10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',-1)">−1</button>
+      <span class="jog-pos" id="jog-x">0.0</span>
+      <button class="btn small jog-btn" onclick="jogAxis('x',1)">+1</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',10)">+10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',50)">+50</button>
+      <button class="btn small jog-btn" onclick="jogAxis('x',100)">+100</button>
+    </div>
+
+    <div class="jog-row">
+      <span class="jog-label">Z (mm)</span>
+      <button class="btn small jog-btn" onclick="jogAxis('z',-100)">−100</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',-50)">−50</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',-10)">−10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',-1)">−1</button>
+      <span class="jog-pos" id="jog-z">0.0</span>
+      <button class="btn small jog-btn" onclick="jogAxis('z',1)">+1</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',10)">+10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',50)">+50</button>
+      <button class="btn small jog-btn" onclick="jogAxis('z',100)">+100</button>
+    </div>
+
+    <div class="jog-row">
+      <span class="jog-label">A (°)</span>
+      <button class="btn small jog-btn" onclick="jogAxis('a',-90)">−90</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',-45)">−45</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',-10)">−10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',-1)">−1</button>
+      <span class="jog-pos" id="jog-a">0.0</span>
+      <button class="btn small jog-btn" onclick="jogAxis('a',1)">+1</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',10)">+10</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',45)">+45</button>
+      <button class="btn small jog-btn" onclick="jogAxis('a',90)">+90</button>
+    </div>
+
+    <div class="pos-snippet" id="pos-snippet">x_mm: 0.0 &nbsp;&nbsp; z_mm: 0.0 &nbsp;&nbsp; a_deg: 0.0</div>
+  </div>
+
+  <!-- Servo Raw Control -->
+  <div class="card">
+    <h2>Servo Raw Control <span style="font-size:0.75rem;color:#555">(live — drag to calibrate)</span></h2>
+
+    <div class="slider-row">
+      <span class="slider-label">Pincher — Grip (S1)</span>
+      <input type="range" id="s-pincher-s1" min="500" max="2500" step="10" value="1500"
+             oninput="onServoSlider('pincher','s1',this.value)">
+      <span class="slider-val"><span id="v-pincher-s1">1500</span> µs</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Pincher — Flip (S2)</span>
+      <input type="range" id="s-pincher-s2" min="500" max="2500" step="10" value="1500"
+             oninput="onServoSlider('pincher','s2',this.value)">
+      <span class="slider-val"><span id="v-pincher-s2">1500</span> µs</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Player — Play (S1)</span>
+      <input type="range" id="s-player-s1" min="500" max="2500" step="10" value="1500"
+             oninput="onServoSlider('player','s1',this.value)">
+      <span class="slider-val"><span id="v-player-s1">1500</span> µs</span>
+    </div>
+    <div class="slider-row">
+      <span class="slider-label">Player — Speed (S2)</span>
+      <input type="range" id="s-player-s2" min="500" max="2500" step="10" value="1500"
+             oninput="onServoSlider('player','s2',this.value)">
+      <span class="slider-val"><span id="v-player-s2">1500</span> µs</span>
+    </div>
+
+    <div class="config-hint">
+      robot_params.yaml keys →
+      Grip S1: <code>grip.open_pulse_us</code> / <code>grip.close_pulse_us</code> &nbsp;|&nbsp;
+      Flip S2: <code>flip.servo_pulse_a_us</code> / <code>flip.servo_pulse_b_us</code> &nbsp;|&nbsp;
+      Play S1: <code>player.play_pulse_us</code> / <code>player.stop_pulse_us</code> &nbsp;|&nbsp;
+      Speed S2: <code>player.speed_33_pulse_us</code> / <code>player.speed_45_pulse_us</code>
+    </div>
+  </div>
+
+  <!-- E-Stop -->
+  <div class="card">
+    <h2>Emergency Stop</h2>
+    <button class="btn danger" id="estop-btn" style="font-size:1.1rem;padding:0.7rem 2rem"
+            onclick="triggerEstop()">⛔ E-STOP</button>
+    <button class="btn" id="clear-estop-btn" style="margin-left:1rem" disabled
+            onclick="clearEstop()">Clear E-Stop</button>
+    <small style="display:block;margin-top:0.5rem;color:#555">Keyboard: <kbd>Esc</kbd></small>
+  </div>
+
+  <!-- High-level Controls -->
   <div class="card">
     <h2>Controls</h2>
     <button class="btn" onclick="sendCmd('home')">Home All</button>
     <button class="btn" onclick="sendCmd('play')">Play</button>
     <button class="btn" onclick="sendCmd('flip')">Flip</button>
     <button class="btn" onclick="sendCmd('skip')">Skip</button>
-    <button class="btn danger" onclick="sendCmd('stop')">Stop</button>
   </div>
 
+  <!-- Log -->
   <div class="card">
     <h2>Log</h2>
     <div id="log"></div>

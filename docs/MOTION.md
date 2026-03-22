@@ -1,146 +1,115 @@
 # Motion Coordinator and Homing
 
-## Motion Coordinator Responsibilities
+## Responsibilities
 
-- Convert mm/degrees to microsteps using mechanical ratios from YAML config
-- Enforce safety velocity scaling from the LiDAR safety node
+- Convert mm/degrees to microsteps using ratios from `robot_params.yaml`
+- Enforce safety velocity scaling (multiply all velocities by `/safety/velocity_scale`)
 - Write coordinated RPDOs for multi-axis moves, gated by SYNC
-- Monitor RAMPSTAT and status words to determine move completion
-- Orchestrate homing sequence order with spatial awareness
-- Host action servers for the behavior tree
+- Monitor RAMPSTAT and status words for completion
+- Orchestrate homing with spatial awareness
+- Host action servers for behavior tree and direct commands
+- Handle incremental jog and raw servo commands from web UI
 
 ## Coordinate Systems
 
-The SBC works in physical units. The MCUs work in microsteps. Conversion happens in the motion coordinator.
+- **X**: millimetres (0 = stack endstop, ~950 = turntable)
+- **Z**: millimetres (0 = lowest, ~150 = endstop)
+- **A**: degrees (0 = endstop, 180 = park/away, 300 = max)
+- **Pincher/Player**: microseconds pulse width (500–2500 µs)
 
-- **X axis**: millimeters (0mm = stack endstop, 1000mm = turntable end)
-- **Z axis**: millimeters (0mm = lowest, 150mm = highest/endstop)
-- **A axis**: degrees (0° = endstop, 300° = maximum rotation, 180° = park)
-- **Pincher/Player**: microseconds pulse width (500–2500μs)
+## Manual Control Topics
 
-## Homing Sequence — Stack-Aware
+These topics allow the web UI to drive the robot directly without going through the behavior tree. They are intended for calibration and debugging.
 
-### Phase 0 — Assess (no motors move)
+### `/motion/jog` (std_msgs/String)
+Format: `"<axis> <delta>"` — e.g. `"x 10.0"`, `"z -5.0"`, `"a 90.0"`
 
-Read all sensors over CAN:
-- A axis pot → coarse angle (from TPDO or SDO read)
-- X axis ToF → approximate rail position
-- Z axis ToF → approximate height
+motion_coordinator adds the delta to the current `actual_pos` in steps and sends an RPDO immediately. Jog speed: 50 mm/s for linear axes, 30 °/s for A axis, with safety scaling applied. E-stop blocks jog.
 
-Classify starting regime:
+### `/motion/servo_raw` (std_msgs/String)
+Format: `"<node_name> <s1_us> <s2_us>"` — e.g. `"pincher 1500 1200"`
 
-```python
-def classify_regime(x_pos, a_angle):
-    stack_angle = config.record_stack.a_center_deg
-    tolerance = config.record_stack.a_tolerance_deg
-    pointing_at_stack = abs(normalize_angle(a_angle - stack_angle)) < 90
-    
-    if x_pos < config.record_stack.x_danger_mm and pointing_at_stack:
-        return IN_STACK  # Arm may be inside shelved structure
-    elif x_pos > config.turntable.x_danger_mm:
-        return NEAR_TURNTABLE
-    else:
-        return OPEN_AIR
+Sets both servo channels on a node simultaneously. Pulse widths clamped to 500–2500 µs. Bypasses the action abstraction (Grip, FlipRecord, etc.) — intended for finding servo endpoints during initial calibration. See HMI_AND_IDENTIFICATION.md for the calibration workflow.
+
+## E-Stop Architecture
+
+Two independent estop sources, tracked separately in motion_coordinator:
+
+| Source | Topic | Managed by | Behaviour |
+|---|---|---|---|
+| Hardware (LiDAR) | `/safety/estop` | `lidar_safety` | Published continuously; auto-clears when object leaves zone |
+| Software (operator) | `/user/estop` | Web UI / operator | Latching; must be explicitly cleared |
+
+`motion_coordinator.estop` property returns `_hw_estop OR _sw_estop`. On either activating: `_halt_all()` sets XTARGET = XACTUAL on all stepper axes. Clearing software estop when hardware estop is still active has no effect on motion.
+
+## Homing Sequence (Stack-Aware)
+
+See `src/motion_coordinator/motion_coordinator/homing.py` for the full implementation.
+
+### Phase 0 — Assess (no motion)
+Read A angle, X position, Z height. Classify regime:
+
+```
+if X < x_danger_mm AND A pointing at stack (within 90° of stack angle):
+    IN_STACK    ← arm may be between shelf floors
+elif X > turntable.x_danger_mm:
+    NEAR_TURNTABLE
+else:
+    OPEN_AIR
 ```
 
-### IN_STACK Regime — Stack Extraction
+### IN_STACK Extraction (critical safety path)
 
-**Critical constraint**: When the arm is between shelf floors, Z movement is dangerous in both directions (shelves above and below with ~20mm clearance). A rotation is dangerous (pincher sweeps into shelf walls). The ONLY safe degree of freedom is X retract along the rail.
+When arm is between shelf floors, Z movement is dangerous in both directions (shelf above and below). Rotation sweeps into shelf walls.
 
-**Precondition**: A axis must be roughly aligned with X rail (within ±`a_tolerance_deg` of the stack-facing angle). If not aligned, the pincher will clip shelf edges during retract → ABORT, require manual intervention.
+**Only safe action: retract X along the rail.**
 
-```python
-if regime == IN_STACK:
-    stack_angle = config.record_stack.a_center_deg
-    if abs(normalize_angle(a_angle - stack_angle)) > config.record_stack.a_tolerance_deg:
-        return abort("Arm inside stack but A axis misaligned — manual repositioning required")
-    
-    # Retract X only — Z and A FROZEN
-    await move_axis_velocity(node_x, direction=AWAY_FROM_STACK,
-                             speed=config.velocities.stack_retract,  # 5 mm/s
-                             stallguard_sensitivity=MAX)
-    await wait_until(lambda: read_xactual_mm(node_x) > config.record_stack.x_clear_mm)
-    await halt_axis(node_x)
-    # Now safe — fall through to standard sequence
-```
+Precondition: A must be aligned with the rail (within ±`a_tolerance_deg`). If misaligned, **ABORT** — manual intervention required. This is a hard failure; the homing sequence returns False.
 
-### Standard Sequence (OPEN_AIR or after extraction)
+Execute: retract X only (Z and A frozen) at 5 mm/s until X > `x_clear_mm`, then halt. Fall through to standard sequence.
 
-**Phase 1 — Z safe height**: Move Z up to clear turntable and stack. Always safe when not inside stack — nothing above the robot.
+### Standard Sequence (OPEN_AIR or post-extraction)
 
-```python
-if z_pos < config.safe_zone.z_clear_mm:
-    await move_axis_velocity(node_z, direction=UP, speed=config.velocities.z_initial_up)
-    await wait_until(lambda: read_tof(node_z) > config.safe_zone.z_clear_mm)
-    await halt_axis(node_z)
-```
+**Phase 1 — Z safe height**: If Z < `z_clear_mm`, move Z up at 10 mm/s until Z > `z_clear_mm`.
 
-**Phase 2 — X to safe middle zone**: Check A safety first. If A is pointing toward a wall/furniture (outside safe window), move Z to max height first, then rotate A to park at very slow speed with max StallGuard sensitivity. Then move X to safe zone center.
+**Phase 2 — X to safe zone**: Check if A is pointing toward a wall (outside `min_safe_deg`–`max_safe_deg`). If unsafe AND X not in safe zone: move Z to max height, rotate A to park (180°) at 5°/s. Then move X to safe zone centre at 20 mm/s.
 
-```python
-a_safe = config.safety.a_axis.min_safe_deg < a_angle < config.safety.a_axis.max_safe_deg
+**Phase 3 — Home A axis**: X in safe zone, Z high. Send home command, wait for `homed` status bit, then move to 180° park position.
 
-if not a_safe and x_zone != SAFE_MIDDLE:
-    # Worst case: A dangerous AND X near obstacle
-    await move_axis_velocity(node_z, UP, SLOW)
-    await wait_until_endstop(node_z)
-    await rotate_a_to_park(a_angle, speed=config.velocities.a_emergency_park)
-elif not a_safe:
-    await rotate_a_to_park(a_angle, speed=config.velocities.a_emergency_park)
+**Phase 4 — Home X axis**: A parked, Z high. Home to endstop at 40 mm/s. After, move to safe zone centre.
 
-if x_zone != SAFE_MIDDLE:
-    await move_axis_velocity(node_x, toward_middle(x_pos), config.velocities.x_to_safe_zone)
-    await wait_until(lambda: in_safe_zone(read_xactual_mm(node_x)))
-    await halt_axis(node_x)
-```
+**Phase 5 — Home Z axis**: All positions known. Home Z upward to endstop at 20 mm/s, lower to `z_clear_mm`.
 
-**Phase 3 — Home A axis**: X is safe, Z is high. Read pot → determine shortest path to endstop. Send home command to A axis MCU. Wait for "homed" status. Move to park angle (180°).
-
-**Phase 4 — Home X axis**: A is parked, Z is high. Send home command to X MCU. Endstop at x=0. After homing, move to safe zone center.
-
-**Phase 5 — Home Z axis**: All axes in known positions. Home Z upward to endstop. After homing, lower to clearance height.
-
-**Phase 6 — Report all homed.** Behavior tree can begin operational loop.
+**Phase 6 — Done**: Publish `HomeAll.Feedback(current_phase='done', axes_homed=0b111)`, return True.
 
 ### Homing Velocities
 
-All homing moves use reduced speeds for safety:
+| Move | Speed | Notes |
+|---|---|---|
+| X retract from stack | 5 mm/s | Most cautious — shelves on both sides |
+| Z initial up | 10 mm/s | High StallGuard |
+| A emergency park | 5°/s | Max StallGuard |
+| X to safe zone | 20 mm/s | High StallGuard |
+| A home to endstop | 30°/s | Normal StallGuard |
+| Z home to endstop | 20 mm/s | Normal StallGuard |
+| X home to endstop | 40 mm/s | Normal StallGuard |
 
-| Move | Speed | StallGuard |
-|------|-------|------------|
-| Stack retract (X) | 5 mm/s | Maximum sensitivity |
-| Z initial up | 10 mm/s | High sensitivity |
-| X to safe zone | 20 mm/s | High sensitivity |
-| A emergency park | 5 °/s | Maximum sensitivity |
-| A normal home | 30 °/s | High sensitivity |
-| X home to endstop | 40 mm/s | Normal |
-| Z home to endstop | 20 mm/s | Normal |
+All velocities are multiplied by `safety_scale` before being sent to the CAN nodes.
 
-### Error Recovery
+### Cancellation and Error Recovery
 
-Every `await` in the homing sequence is cancellable. If safety system fires estop during homing, all axes halt, homing fails. Next attempt starts fresh from Phase 0 — re-reads all sensors, makes new decisions. Never assumes previous attempt left things in a known state.
+Every polling loop checks `goal_handle.is_cancel_requested` and `node.estop`. If either fires, all axes halt and homing returns False.
+
+If safety fires estop during homing, all axes halt immediately. The next homing attempt starts Phase 0 fresh — re-reads sensors, makes new regime decisions. Never assumes previous state.
 
 ## Safety Integration
 
-The motion coordinator subscribes to `/safety/velocity_scale` and `/safety/estop`.
+motion_coordinator subscribes `/safety/velocity_scale` and `/safety/estop`.
 
-Before sending any RPDO, the coordinator multiplies the requested velocity by the safety scale factor. If scale is 0.0, the move is blocked. If estop is true, all axes receive immediate halt (write current XACTUAL as XTARGET).
+- Before any RPDO: multiply velocity by `safety_scale`. If scale = 0.0, move is blocked.
+- On estop: write XTARGET = XACTUAL on all axes (immediate deceleration stop).
+- During an active move: if scale drops to 0.25, active VMAX updates to 25%. If scale drops to 0.0, XTARGET = XACTUAL. When scale returns to 1.0, node resumes toward original target from current position.
 
-During an active move, if the safety scale drops:
-- To 0.25: update VMAX on all active axes to 25% of their configured maximum
-- To 0.0: write XTARGET = XACTUAL on all axes (decel stop)
+## Pot Sanity Check (Future)
 
-When safety clears (scale returns to 1.0), the move resumes from the current position toward the original target.
-
-## Pot Sanity Check
-
-The motion coordinator (or diagnostics node) periodically reads the A axis pot value from the TPDO and compares it to the expected angle derived from XACTUAL:
-
-```python
-expected_angle = xactual_to_degrees(a_tpdo.actual_position)
-pot_angle = a_tpdo.pot_angle / 10.0  # 0.1° units
-if abs(normalize_angle(expected_angle - pot_angle)) > 5.0:
-    # Belt slip or mechanical failure
-    publish_emcy("A axis position divergence")
-    halt_all_axes()
-```
+motion_coordinator/diagnostics will periodically read the A axis pot angle from TPDO bytes 6–7, compare to expected angle derived from XACTUAL. Divergence > 5° triggers an EMCY "A axis position divergence" and halts all axes — indicates belt slip or mechanical failure.

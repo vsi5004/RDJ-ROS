@@ -15,8 +15,6 @@
 #   http://robot-ip:8080   — web dashboard
 #   ws://robot-ip:9090     — rosbridge WebSocket
 
-version: "3.8"
-
 services:
 
   # ── CAN bus setup (hardware profile only) ─────────────────────────────────

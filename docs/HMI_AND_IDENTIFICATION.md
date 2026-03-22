@@ -2,118 +2,108 @@
 
 ## Design Principle
 
-All human interface paths — web UI, onboard display, voice control — publish to the same ROS 2 topics. The robot's operational logic (behavior tree, motion coordinator) is fully decoupled from the input source. A command to flip a record is identical whether it came from a phone browser, a voice command, or the onboard display.
+All HMI paths (web UI, onboard display, voice) publish to the same ROS 2 topics. Robot logic is fully decoupled from input source — the behavior tree doesn't know or care whether a command came from the web, a button, or voice. rosbridge_websocket bridges the browser to ROS 2.
 
-This is achieved via **rosbridge_websocket**, which bridges ROS 2 topics to WebSocket connections. Any web client can subscribe to status topics and publish commands without needing ROS 2 installed.
-
-## Web Interface (Phone-Accessible)
-
-A lightweight web UI served from the Toradex, accessible from any device on the local network (phone, tablet, laptop).
+## Web Interface (Implemented)
 
 ### Architecture
 
 ```
-Phone/Tablet Browser
-    ↕ WebSocket (ws://robot-ip:9090)
-rosbridge_websocket node (ROS 2)
-    ↕ ROS 2 topics
-Behavior tree / Motion coordinator
+Browser ↔ WebSocket (ws://robot-ip:9090) ↔ rosbridge_websocket ↔ ROS 2 topics
+Browser ← HTTP (http://robot-ip:8080) ← Python http.server ← web/ static files
 ```
 
-### Features
+roslibjs (`roslib.min.js`) is bundled in the Docker image at build time — no CDN dependency, works offline.
 
-- **Playback status**: Current record, side (A/B), playback progress bar
-- **Queue management**: View record stack, reorder, select next record
-- **Manual controls**: Play, pause, flip, skip to next record, return to queue
-- **Mode selection**: Sequential playback, single record repeat, single side repeat
-- **System status**: Axis positions, homing state, safety zone status, faults
-- **Record metadata**: Album art, artist, track listing (from identification system)
+**Important**: `ROSLIB.ActionClient` (roslibjs) uses ROS 1 message naming conventions and does not work with ROS 2 rosbridge. All web → robot commands use plain topic publishes, not action calls. The state_machine bridges `/user/command` to action servers internally.
 
-### Implementation
+### UI Panels
 
-- **Frontend**: Single-page app (React or vanilla JS), served by a lightweight HTTP server (nginx or Python) in the Docker container
-- **WebSocket bridge**: `rosbridge_websocket` from the `rosbridge_suite` package
-- **ROS 2 package**: Add `ros-humble-rosbridge-suite` to the Dockerfile
+**Status** — Live telemetry from `/motion/status` and `/safety/estop`:
+- Axis positions (X mm, Z mm, A °)
+- Per-axis homed flags (X✓ Z✓ A✓)
+- Safety velocity scale with colour coding (green/amber/red)
+- ToF sensor readings (X axis, Z axis, pincher)
+- Moving indicators (per axis)
+- E-stop indicator (hardware estop from LiDAR)
+- Fault banner (red, shows fault_msg when fault=true)
 
-### Topics the Web UI Subscribes To
+**Playback** — `/turntable/progress` as a progress bar (0–100%)
 
-| Topic | Type | Content |
-|-------|------|---------|
-| `/motion/status` | `MotionStatus` | All axis positions, homed state, faults |
-| `/turntable/progress` | `Float32` | Playback progress 0.0–1.0 |
-| `/safety/velocity_scale` | `Float32` | Current safety scaling |
-| `/record/metadata` | `AlbumMetadata` | Current record identification |
-| `/diagnostics` | `DiagnosticArray` | System health |
+**Manual Jog** — Direct axis position control for hardware calibration and debugging:
+- X, Z: ±1 / ±10 / ±50 / ±100 mm buttons
+- A: ±1 / ±10 / ±45 / ±90 ° buttons
+- Live position display per axis
+- Position snippet (`x_mm: / z_mm: / a_deg:`) for copy-paste into `robot_params.yaml`
+- Buttons disabled when not homed or e-stop active
+- Publishes `"<axis> <delta>"` to `/motion/jog`; motion_coordinator applies immediately
 
-### Topics the Web UI Publishes To
+**Servo Raw Control** — Live pulse-width sliders for servo endpoint calibration:
+- Pincher S1 (grip), Pincher S2 (flip), Player S1 (play), Player S2 (speed)
+- Range: 500–2500 µs, step 10 µs; updates live on drag
+- Labelled with corresponding `robot_params.yaml` key for each endpoint
+- Publishes `"<node> <s1_us> <s2_us>"` to `/motion/servo_raw`
 
-| Topic | Type | Content |
-|-------|------|---------|
-| `/user/command` | `String` | "play", "pause", "flip", "skip", "home" |
-| `/user/play_mode` | `String` | "sequential", "repeat_record", "repeat_side" |
-| `/user/select_record` | `UInt8` | Queue slot index to play next |
+**Emergency Stop**:
+- Red ⛔ E-STOP button — activates software estop via `/user/estop: true`
+- Clear E-Stop button — publishes `/user/estop: false`; only clears software estop (hardware estop from LiDAR must clear on its own)
+- `Escape` keyboard shortcut triggers estop
 
-The behavior tree checks these user command topics and integrates them into its decision flow.
+**Controls** — High-level commands via `/user/command`:
+- Home All, Play, Flip, Skip
 
-## Onboard Display (Optional)
+### Topics
 
-A small display (3.5"–5" HDMI or DSI) mounted on the robot base showing:
+**Subscribed by browser:**
+| Topic | Type | Used for |
+|---|---|---|
+| `/motion/status` | `vinyl_robot_msgs/MotionStatus` | All axis + sensor display |
+| `/turntable/progress` | `std_msgs/Float32` | Progress bar |
+| `/safety/estop` | `std_msgs/Bool` | Hardware estop indicator |
 
-- Current record and side
-- Playback progress
-- System status (homed, faults, safety)
-- IP address for web UI access
+**Published by browser:**
+| Topic | Type | Purpose |
+|---|---|---|
+| `/user/command` | `std_msgs/String` | High-level commands (home, play, flip, skip) |
+| `/user/estop` | `std_msgs/Bool` | Software e-stop activate/clear |
+| `/motion/jog` | `std_msgs/String` | Axis jog increments |
+| `/motion/servo_raw` | `std_msgs/String` | Raw servo pulse widths for calibration |
 
-Can run as a separate lightweight container on Torizon using Weston/Wayland, subscribing to the same ROS 2 topics as the web UI via rosbridge or native ROS 2.
+## Servo Endpoint Calibration Workflow
 
-## Voice Control (Optional, Future)
+The servo endpoints in `robot_params.yaml` (`grip.open_pulse_us`, `flip.servo_pulse_a_us`, etc.) need to be determined for each physical build. Use the web UI Servo Raw Control panel:
 
-Voice input as another command source. The voice processing runs either:
-- **On-device**: Wake word detection + local command recognition (limited vocabulary: "play", "flip", "next", "stop")
-- **Cloud-based**: Stream audio to a speech-to-text API, parse intent, publish to `/user/command`
+1. Home the robot
+2. Open the web UI at `http://robot-ip:8080`
+3. Drag each servo slider until the mechanism reaches the desired position
+4. Note the µs value shown next to the slider
+5. Update the corresponding key in `config/robot_params.yaml`
+6. Restart the container (config is volume-mounted, no rebuild needed)
 
-Either way, the output is a message on `/user/command` — the behavior tree doesn't know or care that it came from voice.
+## Onboard Display (Future)
 
-## Record Identification
+Optional 3.5"–5" HDMI/DSI display showing current record/side, progress, status, IP address. Separate lightweight Torizon container using Weston/Wayland. Publishes to same `/user/*` topics.
 
-Two complementary approaches for identifying which record is playing:
+## Voice Control (Future)
 
-### Visual Label Recognition (Camera-Based)
+On-device wake word + local command recognition, or cloud speech-to-text. Output publishes to `/user/command` — same interface as web UI.
 
-The existing camera (used for tonearm tracking) can also capture the record label when the arm is positioned over the platter. This happens during the record handling workflow — the camera already has a view of the platter area.
+## Record Identification (Future)
 
-**Pipeline:**
-1. Capture label image when record is placed on platter (before starting playback)
-2. Run OCR or vision AI on the label image to extract text (artist, album, catalog number)
-3. Query Discogs API (preferred) or MusicBrainz API with extracted text
-4. Discogs catalog number is the most reliable identifier — it's unique per pressing
-5. Cache results locally so repeated plays of the same record don't re-query
-
-**Discogs API:**
-- Free tier for personal use (60 requests/minute)
-- Search by catalog number, artist, or album title
-- Returns full metadata: tracklist, year, genre, cover art URL
-- Requires a user agent string and optional OAuth for higher rate limits
-
-**Fallback for worn/stylized labels:**
-A vision-capable AI API (Claude, GPT-4V) can identify records from label photos more robustly than pure OCR, handling stylized fonts, logos, and partial text. This would be an API call from the SBC, not on-device inference.
+### Visual Label Recognition
+1. Capture label image when record is placed (camera already has platter view)
+2. OCR or vision AI extracts text (artist, album, catalog number)
+3. Query Discogs API (preferred) or MusicBrainz
+4. Discogs catalog number is most reliable identifier (unique per pressing)
+5. Fallback: vision AI (Claude, GPT-4V) for worn/stylized labels
 
 ### Audio Fingerprinting
-
-Capture a short audio sample from the turntable's audio output and match it against a fingerprint database.
-
-**Services:**
-- **AudD** — REST API, 10-second audio clips, returns track/artist/album
-- **ACRCloud** — Similar service, widely used in production
-
-This identifies the specific track playing, not just the album. Useful for displaying "now playing" information on the web UI.
-
-**Integration**: A ROS 2 node captures audio from an ALSA device (the turntable's audio output routed through a USB audio interface or the SoM's audio input), sends a 10-second clip to the fingerprint API, and publishes the result.
+1. Capture 10-second audio sample from turntable output
+2. AudD or ACRCloud REST API returns track/artist/album
+3. Identifies the specific track playing, not just the album
 
 ### AlbumMetadata Message
-
 ```
-# msg/AlbumMetadata.msg
 string artist
 string album_title
 string catalog_number
@@ -125,18 +115,4 @@ string identification_method    # "visual", "audio_fingerprint", "manual"
 float32 confidence              # 0.0–1.0
 ```
 
-### Node: record_identifier
-
-Subscribes to `/camera/image_raw` and optionally an audio topic. Publishes to `/record/metadata`. Runs identification on record placement (visual) and optionally during playback (audio fingerprint).
-
-## Additional ROS 2 Packages for HMI
-
-Add to Dockerfile:
-
-```dockerfile
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-rosbridge-suite \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-The web frontend files (HTML/JS/CSS) are served by a simple HTTP server and bundled in the Docker image or mounted as a volume.
+**record_identifier node** *(not yet implemented)*: Subscribes `/camera/image_raw` (+ optional audio), publishes `/record/metadata`.

@@ -1,264 +1,104 @@
 # ROS 2 System Architecture
 
-## Platform
+The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker. It uses CycloneDDS middleware, native FlexCAN at 1 Mbit for the CAN bus, and coordinates 5 CANopen nodes (X, Z, A axes plus Pincher and Player servos).
 
-- **SBC**: Toradex Verdin iMX8M Plus (4GB) on Mallow carrier
-- **OS**: Torizon OS with Docker containers
-- **ROS 2**: Humble (Ubuntu 22.04 Jammy base) — or Jazzy if `ros-jazzy-sick-scan-xd` is available as binary
-- **DDS**: CycloneDDS (lower overhead than FastDDS for single-machine)
-- **CAN interface**: Native FlexCAN on iMX8M Plus → socketcan `can0` at 1Mbit
+## Implementation Status
+
+| Package | Status | Notes |
+|---|---|---|
+| `vinyl_robot_msgs` | ✅ Complete | 6 actions, 2 messages |
+| `motion_coordinator` | ✅ Complete | Full homing, action servers, jog, servo raw, hw+sw estop |
+| `mock_nodes` | ✅ Complete | 50 Hz physics simulation of all 5 CAN nodes |
+| `lidar_safety` | ✅ Functional stub | mock_mode only; real LiDAR CV pipeline future work |
+| `turntable_monitor` | ✅ Functional stub | mock_mode only; real camera CV pipeline future work |
+| `web_interface` | ✅ Complete | rosbridge + dark UI with jog panel, servo calibration, estop |
+| `state_machine` | 🔄 Partial stub | HomeAll wired up; BehaviorTree.CPP implementation pending |
+| `led_controller` | 🔄 Stub | Logging only |
+| `diagnostics_aggregator` | ✅ Functional | Publishes DiagnosticArray at 1 Hz |
+| `record_identifier` | ❌ Not started | Optional future package |
 
 ## Node Graph
 
-Seven core ROS 2 nodes plus optional HMI and identification nodes:
+1. **mock_canopen_master** *(sim only)* — Simulates all 5 CAN nodes at 50 Hz with ramp physics. Publishes `/canopen/<name>/tpdo1`, subscribes `/canopen/<name>/rpdo1`. Replaced at hardware time by `canopen_master_driver` + `canopen_proxy_driver`.
 
-### 1. canopen_master (from ros2_canopen package)
+2. **motion_coordinator** — Core intelligence node. Converts mm/deg to microsteps, enforces safety scaling, orchestrates homing, hosts action servers, handles jog and raw servo commands.
 
-Bridge between ROS 2 and the CAN bus. Manages CANopen stack: NMT lifecycle, SYNC generation at 50Hz, SDO client, PDO mapping. Configured via `bus.yml` and EDS files.
+3. **lidar_safety** — SICK TIM571 laser scan → dynamic safety zones (warning 400 mm, stop 200 mm). Publishes `/safety/velocity_scale` (0.0–1.0) and `/safety/estop`. In mock_mode always publishes scale=1.0, estop=false.
 
-**Publishes**: `/canopen/node_N/tpdo1`, `/canopen/node_N/nmt_state`, `/canopen/node_N/emcy`
-**Subscribes**: `/canopen/node_N/rpdo1`
+4. **turntable_monitor** — Camera CV pipeline tracks tonearm radial position. Publishes `/turntable/progress` (0.0–1.0). In mock_mode holds at 0.0.
 
-### 2. motion_coordinator
+5. **state_machine** — Orchestrator. Currently routes `/user/command: home` to the HomeAll action server. Full BehaviorTree.CPP implementation pending (see BEHAVIOR_TREE.md).
 
-Translates high-level move commands into coordinated TMC5160 register writes. Knows mechanical geometry (mm/deg to microsteps conversion). Orchestrates homing sequence. Enforces safety velocity scaling. Hosts action servers for the behavior tree.
+6. **led_controller** — Stub. Will map robot state to DotStar LED patterns.
 
-**Subscribes**: `/canopen/node_N/tpdo1`, `/safety/velocity_scale`, `/safety/estop`
-**Publishes**: `/motion/status`, `/canopen/node_N/rpdo1`
-**Action servers**: `/motion/move_to_position`, `/motion/home_all`, `/motion/grip`, `/motion/flip_record`, `/motion/press_play`, `/motion/set_speed`
+7. **diagnostics_aggregator** — Aggregates motion and safety health, publishes `DiagnosticArray`.
 
-### 3. lidar_safety
+8. **web_interface** — rosbridge_websocket on port 9090 + Python HTTP server on port 8080. Full operator panel: axis status, ToF sensors, manual jog, servo calibration sliders, e-stop.
 
-Subscribes to SICK TIM571 laser scan, defines dynamic safety zones that rotate with the A axis angle. Publishes velocity scaling factor and emergency stop signal.
+9. **record_identifier** *(future)* — Visual label recognition + audio fingerprinting.
 
-**Subscribes**: `/scan`, `/canopen/node_3/tpdo1` (A axis angle from pot)
-**Publishes**: `/safety/velocity_scale` (Float32: 1.0=full, 0.25=slow, 0.0=halt), `/safety/estop` (Bool)
+## Topics Reference
 
-Safety zones:
-- Warning zone (400mm radius): scale to 25%
-- Stop zone (200mm radius): halt all motion
-- Exclusion angles: static environment baseline, only trigger on new objects
-- Zones rotate with A axis angle — knows arm direction from TPDO data
+### CAN Interface (mock or real hardware bridge)
+| Topic | Type | Direction |
+|---|---|---|
+| `/canopen/<name>/tpdo1` | `std_msgs/UInt8MultiArray` | Node → motion_coordinator |
+| `/canopen/<name>/rpdo1` | `std_msgs/UInt8MultiArray` | motion_coordinator → Node |
 
-### 4. turntable_monitor
+Node names: `x_axis`, `z_axis`, `a_axis`, `pincher`, `player`
 
-Processes camera feed to track tonearm position. Simple CV pipeline: crop → HSV threshold → find contour → compute centroid → map to radial progress.
+### Safety
+| Topic | Type | Publisher | Subscriber |
+|---|---|---|---|
+| `/safety/velocity_scale` | `std_msgs/Float32` | lidar_safety | motion_coordinator |
+| `/safety/estop` | `std_msgs/Bool` | lidar_safety | motion_coordinator, web_interface |
+| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator |
 
-**Subscribes**: `/camera/image_raw` (sensor_msgs/Image)
-**Publishes**: `/turntable/progress` (Float32: 0.0=outer groove, 1.0=run-out)
+**Hardware vs software estop**: `/safety/estop` is sensor-driven (LiDAR). `/user/estop` is operator-driven (web UI button or `Escape` key). motion_coordinator tracks them independently — clearing a software estop does not override an active hardware estop.
 
-Update rate: 1–2Hz is sufficient. The robot needs ~10 seconds warning before run-out, not frame-accurate tracking.
+### Motion
+| Topic | Type | Publisher | Subscriber |
+|---|---|---|---|
+| `/motion/status` | `vinyl_robot_msgs/MotionStatus` | motion_coordinator | state_machine, web_interface, diagnostics |
+| `/motion/jog` | `std_msgs/String` | web_interface | motion_coordinator |
+| `/motion/servo_raw` | `std_msgs/String` | web_interface | motion_coordinator |
 
-### 5. state_machine (BehaviorTree.CPP)
+`/motion/jog` format: `"<axis> <delta>"` — e.g. `"x 10.0"`, `"z -5.0"`, `"a 90.0"`
 
-Top-level orchestrator. Commands the full record-handling workflow. Uses reactive sequences so safety checks can interrupt any operation. Also listens to user commands from the web UI.
+`/motion/servo_raw` format: `"<node> <s1_us> <s2_us>"` — e.g. `"pincher 1500 1200"`. Clamps to 500–2500 µs. Used for servo endpoint calibration; bypasses action abstraction.
 
-**Subscribes**: `/motion/status`, `/turntable/progress`, `/safety/velocity_scale`, `/safety/estop`, `/user/command`, `/user/play_mode`, `/user/select_record`
-**Calls**: Action servers on motion_coordinator
+### User Commands
+| Topic | Type | Publisher | Subscriber |
+|---|---|---|---|
+| `/user/command` | `std_msgs/String` | web_interface | state_machine |
+| `/user/play_mode` | `std_msgs/String` | web_interface | state_machine |
+| `/user/select_record` | `std_msgs/UInt8` | web_interface | state_machine |
+| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator |
 
-### 6. led_controller
+### Sensors
+| Topic | Type | Publisher | Subscriber |
+|---|---|---|---|
+| `/turntable/progress` | `std_msgs/Float32` | turntable_monitor | state_machine, web_interface |
+| `/scan` | `sensor_msgs/LaserScan` | sick_scan_xd | lidar_safety |
+| `/camera/image_raw` | `sensor_msgs/Image` | usb_cam | turntable_monitor |
 
-Maps axis positions and targets to DotStar LED patterns. Writes to A axis and Player nodes via canopen_master.
+## Action Servers (on motion_coordinator)
 
-**Subscribes**: `/motion/status`, `/canopen` TPDOs
+| Server | Action Type | Purpose |
+|---|---|---|
+| `/motion/home_all` | `vinyl_robot_msgs/HomeAll` | Stack-aware 6-phase homing sequence |
+| `/motion/move_to_position` | `vinyl_robot_msgs/MoveToPosition` | Coordinated XZA move with velocity scaling |
+| `/motion/grip` | `vinyl_robot_msgs/Grip` | Open/close pincher servo with ToF confirmation |
+| `/motion/flip_record` | `vinyl_robot_msgs/FlipRecord` | Rotate flip servo to side B |
+| `/motion/press_play` | `vinyl_robot_msgs/PressPlay` | Press/lift player servo |
+| `/motion/set_speed` | `vinyl_robot_msgs/SetSpeed` | Select 33/45 RPM via speed servo |
 
-### 7. diagnostics
-
-Aggregates health data from all nodes. Publishes standard `diagnostic_msgs/DiagnosticArray`.
-
-### 8. web_interface (rosbridge_websocket + HTTP server)
-
-Bridges ROS 2 topics to WebSocket connections for the phone-accessible web UI. Serves static HTML/JS/CSS files. All HMI paths (web, display, voice) publish to the same ROS 2 topics — robot logic is fully decoupled from input source.
-
-**Provides**: WebSocket bridge at `ws://robot-ip:9090`, HTTP server for frontend files
-**Bridges**: All `/motion/*`, `/turntable/*`, `/safety/*`, `/record/*`, `/user/*` topics
-
-See [HMI_AND_IDENTIFICATION.md](./HMI_AND_IDENTIFICATION.md) for full details.
-
-### 9. record_identifier (optional)
-
-Identifies records using visual label recognition (camera → OCR → Discogs API) and/or audio fingerprinting (audio capture → AudD/ACRCloud). Publishes album metadata for display in the web UI.
-
-**Subscribes**: `/camera/image_raw`
-**Publishes**: `/record/metadata` (AlbumMetadata)
-
-See [HMI_AND_IDENTIFICATION.md](./HMI_AND_IDENTIFICATION.md) for full details.
-
-## Action Server Definitions
-
-### /motion/move_to_position
-
-```
-# Goal
-float64 x_mm
-float64 z_mm
-float64 a_deg
-float64 velocity_scale   # 0.0-1.0, multiplied against configured max
----
-# Result
-bool success
-string error_msg
----
-# Feedback
-float64 x_actual_mm
-float64 z_actual_mm
-float64 a_actual_deg
-bool x_in_position
-bool z_in_position
-bool a_in_position
-```
-
-The coordinator converts mm/degrees to microsteps, applies safety velocity scaling, writes RPDOs for all axes, and publishes feedback at 50Hz until all report in-position.
-
-Cancellation: writes current XACTUAL as new XTARGET to each axis → immediate decel stop.
-
-### /motion/home_all
-
-```
-# Goal
-(empty)
----
-# Result
-bool success
-string error_msg
----
-# Feedback
-string current_phase      # "assessing", "z_clearing", "x_to_safe", "homing_a", etc.
-uint8 axes_homed          # count of completed axes
-```
-
-See [MOTION.md](./MOTION.md) for the full homing sequence with stack-awareness.
-
-### /motion/grip
-
-```
-# Goal
-bool close          # true=close, false=open
----
-# Result
-bool success
-float32 tof_mm      # ToF reading after grip (confirmation)
-```
-
-### /motion/flip_record, /motion/press_play, /motion/set_speed
-
-Simple servo commands with completion confirmation.
+**Note on rosbridge + ROS 2 actions**: `ROSLIB.ActionClient` (roslibjs) uses ROS 1 message type naming and is incompatible with ROS 2 rosbridge. The web UI does not call actions directly — instead it publishes to `/user/command` (for state_machine) and `/motion/jog`/`/motion/servo_raw` (for direct motion_coordinator control) using plain String topics.
 
 ## Configuration
 
-All mechanical geometry, safety zones, and operational parameters live in YAML, loaded at launch:
+All mechanical geometry, safety zones, servo pulse widths, and homing parameters live in `config/robot_params.yaml`. During Docker build, config is installed into the vinyl_robot share directory (`/ros_ws/install/vinyl_robot/share/vinyl_robot/config/`). The docker-compose volume mount overlays `./config/` on top of the installed copy at runtime — config is editable without an image rebuild.
 
-```yaml
-# config/robot_params.yaml
-geometry:
-  x_steps_per_mm: 80.0       # microsteps per mm
-  z_steps_per_mm: 400.0      # lead screw pitch dependent
-  a_steps_per_deg: 142.2     # belt/pulley ratio dependent
-  
-positions:
-  turntable:
-    x_mm: 950.0
-    z_platter_mm: 45.0
-  queue_stack:
-    x_mm: 50.0
-    slot_z_mm: [20, 60, 100, 140, 180]  # Z heights for each slot
-  safe_park:
-    x_mm: 500.0
-    z_mm: 120.0
-    a_deg: 180.0
+CANopen config in `config/bus.yml`: interface, bitrate (1 Mbit), sync period (20 ms = 50 Hz), node IDs, EDS file paths.
 
-homing:
-  safe_zone:
-    x_min_mm: 300
-    x_max_mm: 700
-    z_clear_mm: 120
-    a_park_deg: 180
-  turntable:
-    x_center_mm: 950
-    x_danger_mm: 800
-    platter_height_mm: 45
-  record_stack:
-    x_center_mm: 50
-    x_danger_mm: 200
-    x_clear_mm: 250
-    a_center_deg: 0
-    a_tolerance_deg: 15
-    shelf_count: 5
-    shelf_pitch_mm: 40
-    shelf_clearance_mm: 20
-  velocities:
-    z_initial_up: 10
-    x_to_safe_zone: 20
-    a_emergency_park: 5
-    a_normal_home: 30
-    x_home: 40
-    z_home: 20
-    stack_retract: 5
-
-safety:
-  lidar:
-    warning_radius_mm: 400
-    stop_radius_mm: 200
-  a_axis:
-    min_safe_deg: 30
-    max_safe_deg: 330
-  stallguard:
-    homing_threshold: 10    # very sensitive
-    operating_threshold: 4  # less sensitive (carrying record)
-```
-
-## CANopen Master Configuration
-
-```yaml
-# config/bus.yml
-bus:
-  interface: can0
-  bitrate: 1000000
-  sync_period: 20000  # microseconds = 50Hz
-
-nodes:
-  x_axis:
-    node_id: 1
-    eds_file: stepper_node.eds
-  z_axis:
-    node_id: 2
-    eds_file: stepper_node.eds
-  a_axis:
-    node_id: 3
-    eds_file: a_axis_node.eds
-  pincher:
-    node_id: 4
-    eds_file: servo_node.eds
-  player:
-    node_id: 5
-    eds_file: servo_node.eds
-```
-
-## Launch Sequence
-
-Nodes start in dependency order via ROS 2 launch file:
-
-1. `canopen_master` — waits for CAN interface, discovers nodes
-2. `sick_scan_xd` — connects to TIM571 over Ethernet
-3. `usb_cam` — starts camera
-4. `lidar_safety` — waits for first `/scan` message
-5. `motion_coordinator` — subscribes to safety topics, issues home_all
-6. `turntable_monitor` — starts when camera is publishing
-7. `led_controller` — starts anytime
-8. `state_machine` — starts last, waits for all axes homed
-
-## Simulation / Mock Testing
-
-### Level 1 — Mock CAN nodes (no hardware)
-
-A single Python node pretends to be `canopen_master`. When motion_coordinator writes a target, the mock ramps XACTUAL toward it using linear interpolation, then sets in-position status. ~50 lines per mock axis.
-
-Sufficient to develop and test: behavior tree, motion coordinator, homing sequence, safety zones, LED controller, all error handling paths.
-
-### Level 2 — Gazebo (3D physics)
-
-URDF model of the robot. Visual collision checking, realistic timing, simulated LiDAR. 2–3 days setup investment.
-
-### Level 3 — Hardware-in-the-loop
-
-Real Nucleo boards on CAN bus, no motors attached. Tests actual CAN communication and timing.
+EDS files (`stepper_node.eds`, `a_axis_node.eds`, `servo_node.eds`) are the contract between ROS 2 and MCU firmware. Changing OD indices requires updating both.

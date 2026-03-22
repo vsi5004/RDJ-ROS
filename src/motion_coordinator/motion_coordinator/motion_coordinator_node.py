@@ -26,7 +26,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
-from std_msgs.msg import Float32, Bool, UInt8MultiArray
+from std_msgs.msg import Float32, Bool, String, UInt8MultiArray
 
 from vinyl_robot_msgs.msg import MotionStatus
 from vinyl_robot_msgs.action import (
@@ -112,7 +112,8 @@ class MotionCoordinatorNode(Node):
             'player': ServoState(),
         }
         self.safety_scale: float = 1.0
-        self.estop: bool = False
+        self._hw_estop: bool = False   # from lidar_safety (/safety/estop)
+        self._sw_estop: bool = False   # from operator (/user/estop)
         self._fault: bool = False
         self._fault_msg: str = ''
 
@@ -135,6 +136,18 @@ class MotionCoordinatorNode(Node):
         )
         self.create_subscription(
             Bool, '/safety/estop', self._on_estop, 10,
+            callback_group=cb,
+        )
+        self.create_subscription(
+            Bool, '/user/estop', self._on_user_estop, 10,
+            callback_group=cb,
+        )
+        self.create_subscription(
+            String, '/motion/servo_raw', self._on_servo_raw, 10,
+            callback_group=cb,
+        )
+        self.create_subscription(
+            String, '/motion/jog', self._on_jog, 10,
             callback_group=cb,
         )
 
@@ -235,11 +248,64 @@ class MotionCoordinatorNode(Node):
     def _on_velocity_scale(self, msg: Float32) -> None:
         self.safety_scale = float(msg.data)
 
+    @property
+    def estop(self) -> bool:
+        return self._hw_estop or self._sw_estop
+
     def _on_estop(self, msg: Bool) -> None:
-        if msg.data and not self.estop:
-            self.get_logger().error('E-STOP received — halting all axes')
+        was = self.estop
+        self._hw_estop = bool(msg.data)
+        if self.estop and not was:
+            self.get_logger().error('Hardware E-STOP — halting all axes')
             self._halt_all()
-        self.estop = bool(msg.data)
+
+    def _on_user_estop(self, msg: Bool) -> None:
+        was = self.estop
+        self._sw_estop = bool(msg.data)
+        if self._sw_estop and not was:
+            self.get_logger().error('Software E-STOP — halting all axes')
+            self._halt_all()
+        elif not self._sw_estop and was and not self._hw_estop:
+            self.get_logger().info('E-STOP cleared')
+
+    def _on_jog(self, msg: String) -> None:
+        # Format: "<axis> <delta>"  e.g. "x 10.0" or "z -5.0" or "a 90.0"
+        try:
+            parts = msg.data.split()
+            axis, delta = parts[0].lower(), float(parts[1])
+        except (ValueError, IndexError):
+            self.get_logger().warn(f'jog: bad format: {msg.data!r}')
+            return
+        if self.estop:
+            return
+        axis_map = {'x': 'x_axis', 'z': 'z_axis', 'a': 'a_axis'}
+        if axis not in axis_map:
+            self.get_logger().warn(f'jog: unknown axis {axis!r}')
+            return
+        axis_name = axis_map[axis]
+        if axis == 'a':
+            delta_steps = self.deg_to_steps(delta)
+            vmax = self.mmps_to_vmax('a_axis', 30.0)
+        else:
+            delta_steps = self.mm_to_steps(axis_name, delta)
+            vmax = self.mmps_to_vmax(axis_name, 50.0)
+        current = self.node_states[axis_name].actual_pos
+        self.send_rpdo_stepper(axis_name, current + delta_steps, vmax,
+                               CW_ENABLE, RAMP_POSITION)
+
+    def _on_servo_raw(self, msg: String) -> None:
+        # Format: "<node_name> <s1_us> <s2_us>"  e.g. "pincher 1500 1200"
+        try:
+            parts = msg.data.split()
+            name, s1, s2 = parts[0], int(parts[1]), int(parts[2])
+            if name not in self.SERVO_NAMES:
+                self.get_logger().warn(f'servo_raw: unknown node {name!r}')
+                return
+            s1 = max(500, min(2500, s1))
+            s2 = max(500, min(2500, s2))
+            self.send_rpdo_servo(name, s1, s2)
+        except (ValueError, IndexError):
+            self.get_logger().warn(f'servo_raw: bad format: {msg.data!r}')
 
     # ── Coordinate conversion helpers ─────────────────────────────────────────
 

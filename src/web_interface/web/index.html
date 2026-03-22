@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RDJ Vinyl Robot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: 1rem; color: #f90; }
+    .card { background: #1e1e1e; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    .card h2 { font-size: 1rem; color: #aaa; margin-bottom: 0.5rem; }
+    .status-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .status-item { flex: 1; min-width: 80px; }
+    .status-label { font-size: 0.7rem; color: #777; }
+    .status-value { font-size: 1.1rem; font-weight: bold; }
+    .btn { background: #333; border: none; color: #eee; padding: 0.6rem 1rem;
+           border-radius: 6px; cursor: pointer; font-size: 0.9rem; margin: 0.2rem; }
+    .btn:hover { background: #f90; color: #000; }
+    .btn.danger { border: 1px solid #f44; }
+    .btn.danger:hover { background: #f44; }
+    progress { width: 100%; height: 12px; border-radius: 6px; }
+    .connected { color: #4f4; }
+    .disconnected { color: #f44; }
+    #log { font-family: monospace; font-size: 0.75rem; color: #888;
+           height: 80px; overflow-y: auto; border-top: 1px solid #333; padding-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>🎵 RDJ Vinyl Robot</h1>
+
+  <div class="card">
+    <h2>Connection <span id="conn-status" class="disconnected">● Disconnected</span></h2>
+    <small id="ws-url"></small>
+  </div>
+
+  <div class="card">
+    <h2>Playback</h2>
+    <div class="status-row">
+      <div class="status-item">
+        <div class="status-label">PROGRESS</div>
+        <progress id="progress-bar" value="0" max="1"></progress>
+        <div id="progress-val">0%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Axis Positions</h2>
+    <div class="status-row">
+      <div class="status-item">
+        <div class="status-label">X (mm)</div>
+        <div class="status-value" id="x-pos">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">Z (mm)</div>
+        <div class="status-value" id="z-pos">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">A (°)</div>
+        <div class="status-value" id="a-pos">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">HOMED</div>
+        <div class="status-value" id="homed">—</div>
+      </div>
+      <div class="status-item">
+        <div class="status-label">SAFETY</div>
+        <div class="status-value" id="safety-scale">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Controls</h2>
+    <button class="btn" onclick="sendCmd('home')">Home All</button>
+    <button class="btn" onclick="sendCmd('play')">Play</button>
+    <button class="btn" onclick="sendCmd('flip')">Flip</button>
+    <button class="btn" onclick="sendCmd('skip')">Skip</button>
+    <button class="btn danger" onclick="sendCmd('stop')">Stop</button>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+  <script src="roslib.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,93 @@
+# RDJ Vinyl Robot — Docker Compose
+#
+# Profiles:
+#   (default)  : mock simulation, no hardware needed
+#   hardware   : real CAN bus + camera + LiDAR on Toradex
+#
+# Usage:
+#   Simulation (laptop):
+#     docker compose up
+#
+#   Real hardware (on Toradex, after can0.service is up):
+#     docker compose --profile hardware up
+#
+# Web UI (if enabled):
+#   http://robot-ip:8080   — web dashboard
+#   ws://robot-ip:9090     — rosbridge WebSocket
+
+version: "3.8"
+
+services:
+
+  # ── CAN bus setup (hardware profile only) ─────────────────────────────────
+  # Only needed if CAN is NOT configured via systemd can0.service on the host.
+  # If can0.service is active, remove this service entirely.
+  can-setup:
+    image: torizon/debian:4
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    command: >
+      sh -c "
+        ip link set can0 type can bitrate 1000000 restart-ms 100 &&
+        ip link set can0 up &&
+        echo 'CAN0 up at 1Mbit/s' &&
+        sleep infinity
+      "
+    restart: unless-stopped
+    profiles: [hardware]
+
+  # ── Simulation stack (default — no hardware) ───────────────────────────────
+  # Uses bridge networking with explicit port mappings so the web UI is
+  # reachable on the Windows/Mac host. All ROS nodes share one container so
+  # DDS discovery works fine without host networking.
+  vinyl-robot-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vinyl-robot:dev
+    ports:
+      - "8080:8080"   # web UI
+      - "9090:9090"   # rosbridge WebSocket
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - RCUTILS_COLORIZED_OUTPUT=1
+    volumes:
+      - ./config:/ros_ws/install/vinyl_robot/share/vinyl_robot/config:ro
+      - ./logs:/root/.ros/log
+    command: >
+      bash -c "
+        source /ros_ws/install/setup.bash &&
+        ros2 launch vinyl_robot mock_bringup.launch.py
+      "
+    restart: unless-stopped
+    profiles: [""]  # default profile
+
+  # ── Real hardware stack ───────────────────────────────────────────────────
+  vinyl-robot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vinyl-robot:arm64
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/video0:/dev/video0
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - RCUTILS_COLORIZED_OUTPUT=1
+    volumes:
+      - ./config:/ros_ws/install/vinyl_robot/share/vinyl_robot/config:ro
+      - ./logs:/root/.ros/log
+    depends_on:
+      - can-setup
+    command: >
+      bash -c "
+        source /ros_ws/install/setup.bash &&
+        ros2 launch vinyl_robot bringup.launch.py
+      "
+    restart: unless-stopped
+    profiles: [hardware]

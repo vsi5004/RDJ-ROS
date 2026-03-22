@@ -1,0 +1,433 @@
+[FileInfo]
+FileName=stepper_node.eds
+FileVersion=1
+FileRevision=1
+EDSVersion=4.0
+Description=Stepper motor node EDS for RDJ vinyl robot (X axis node_id=1, Z axis node_id=2)
+CreationTime=12:00AM
+CreationDate=01-01-2025
+CreatedBy=RDJ Robot
+ModificationTime=12:00AM
+ModificationDate=01-01-2025
+ModifiedBy=RDJ Robot
+
+[DeviceInfo]
+VendorName=RDJ
+VendorNumber=0x00000001
+ProductName=StepperNode
+ProductNumber=0x00000001
+RevisionNumber=0x00000001
+OrderCode=
+BaudRate_10=0
+BaudRate_20=0
+BaudRate_50=0
+BaudRate_125=0
+BaudRate_250=0
+BaudRate_500=0
+BaudRate_800=0
+BaudRate_1000=1
+SimpleBootUpMaster=0
+SimpleBootUpSlave=1
+Granularity=0
+DynamicChannelsSupported=0
+GroupMessaging=0
+NrOfRXPDO=1
+NrOfTXPDO=1
+LSS_Supported=0
+
+[DummyUsage]
+Dummy0001=0
+Dummy0002=0
+Dummy0003=0
+Dummy0004=0
+Dummy0005=0
+Dummy0006=0
+Dummy0007=0
+
+[Comments]
+Lines=0
+
+[ObjectCount]
+SupportedObjects=23
+1=0x1000
+2=0x1001
+3=0x1017
+4=0x1018
+5=0x1400
+6=0x1600
+7=0x1800
+8=0x1A00
+9=0x2000
+10=0x2001
+11=0x2002
+12=0x2003
+13=0x2004
+14=0x2005
+15=0x2100
+16=0x2101
+17=0x2102
+18=0x2103
+19=0x2104
+20=0x2105
+21=0x2106
+22=0x2107
+23=0x2108
+
+; ─────────────────────────────────────────────────────────────────────────────
+; CANopen mandatory objects
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1000]
+ParameterName=Device type
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x000F0191
+PDOMapping=0
+
+[1001]
+ParameterName=Error register
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=0
+
+[1017]
+ParameterName=Producer heartbeat time
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=100
+PDOMapping=0
+
+[1018]
+ParameterName=Identity object
+ObjectType=0x9
+SubNumber=0x5
+
+[1018sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x4
+PDOMapping=0
+
+[1018sub1]
+ParameterName=Vendor-ID
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000001
+PDOMapping=0
+
+[1018sub2]
+ParameterName=Product code
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000001
+PDOMapping=0
+
+[1018sub3]
+ParameterName=Revision number
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000001
+PDOMapping=0
+
+[1018sub4]
+ParameterName=Serial number
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; RPDO1 communication and mapping (master → node: target, velocity, ctrl)
+; COB-ID = 0x200 + node_id  (synchronous, event-driven from master)
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1400]
+ParameterName=Receive PDO Communication Parameter 1
+ObjectType=0x9
+SubNumber=0x3
+
+[1400sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x2
+PDOMapping=0
+
+[1400sub1]
+ParameterName=COB-ID use by RPDO1
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=$NODEID+0x00000200
+PDOMapping=0
+
+[1400sub2]
+ParameterName=Transmission type
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0xFE
+PDOMapping=0
+
+[1600]
+ParameterName=Receive PDO Mapping Parameter 1
+ObjectType=0x9
+SubNumber=0x5
+
+[1600sub0]
+ParameterName=Number of mapped objects
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x4
+PDOMapping=0
+
+[1600sub1]
+ParameterName=1st mapped object (Target position INT32)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21000020
+PDOMapping=0
+
+[1600sub2]
+ParameterName=2nd mapped object (Max velocity UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21020010
+PDOMapping=0
+
+[1600sub3]
+ParameterName=3rd mapped object (Control word UINT8)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x20040008
+PDOMapping=0
+
+[1600sub4]
+ParameterName=4th mapped object (Ramp mode UINT8)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21080008
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; TPDO1 communication and mapping (node → master: position, status, ToF)
+; COB-ID = 0x180 + node_id  (synchronous, transmitted on each SYNC)
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1800]
+ParameterName=Transmit PDO Communication Parameter 1
+ObjectType=0x9
+SubNumber=0x3
+
+[1800sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x2
+PDOMapping=0
+
+[1800sub1]
+ParameterName=COB-ID use by TPDO1
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=$NODEID+0x00000180
+PDOMapping=0
+
+[1800sub2]
+ParameterName=Transmission type
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x01
+PDOMapping=0
+
+[1A00]
+ParameterName=Transmit PDO Mapping Parameter 1
+ObjectType=0x9
+SubNumber=0x5
+
+[1A00sub0]
+ParameterName=Number of mapped objects
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x4
+PDOMapping=0
+
+[1A00sub1]
+ParameterName=1st mapped object (Actual position INT32)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21010020
+PDOMapping=0
+
+[1A00sub2]
+ParameterName=2nd mapped object (Status word UINT8)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x20030008
+PDOMapping=0
+
+[1A00sub3]
+ParameterName=3rd mapped object (Ramp status UINT8)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21050008
+PDOMapping=0
+
+[1A00sub4]
+ParameterName=4th mapped object (ToF distance UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x21070010
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; Application objects — common
+; ─────────────────────────────────────────────────────────────────────────────
+
+[2000]
+ParameterName=Node role
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=0
+
+[2001]
+ParameterName=Firmware version
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0x0100
+PDOMapping=0
+
+[2002]
+ParameterName=Board temperature (deg C x10)
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0x0000
+PDOMapping=0
+
+[2003]
+ParameterName=Status word
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=1
+
+[2004]
+ParameterName=Control word
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x00
+PDOMapping=1
+
+[2005]
+ParameterName=Uptime (ms)
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; Motion objects — stepper (TMC5160)
+; ─────────────────────────────────────────────────────────────────────────────
+
+[2100]
+ParameterName=Target position (microsteps)
+ObjectType=0x7
+DataType=0x0004
+AccessType=rw
+DefaultValue=0x00000000
+PDOMapping=1
+
+[2101]
+ParameterName=Actual position (microsteps)
+ObjectType=0x7
+DataType=0x0004
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=1
+
+[2102]
+ParameterName=Max velocity (pulses per second)
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=0x0064
+PDOMapping=1
+
+[2103]
+ParameterName=Acceleration
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=0x0064
+PDOMapping=0
+
+[2104]
+ParameterName=Deceleration
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=0x0064
+PDOMapping=0
+
+[2105]
+ParameterName=Ramp status (TMC5160 RAMPSTAT)
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=1
+
+[2106]
+ParameterName=StallGuard result
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0x0000
+PDOMapping=0
+
+[2107]
+ParameterName=ToF distance (mm)
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0xFFFF
+PDOMapping=1
+
+[2108]
+ParameterName=Ramp mode (0=pos, 1=vel+, 2=vel-)
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x00
+PDOMapping=1

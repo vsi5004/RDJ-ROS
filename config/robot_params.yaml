@@ -1,0 +1,91 @@
+# RDJ Vinyl Robot — Mechanical and operational parameters
+# All positions in mm (linear) or degrees (rotary).
+# Change these to match your physical build; no code edits required.
+
+geometry:
+  x_steps_per_mm: 80.0        # GT2 belt, 20T pulley, 1/16 microstepping
+  z_steps_per_mm: 400.0       # Lead screw, 2mm pitch, 1/16 microstepping
+  a_steps_per_deg: 142.2      # Belt/pulley ratio, 1/16 microstepping
+
+positions:
+  turntable:
+    x_mm: 950.0
+    z_platter_mm: 45.0         # Height of platter surface above Z home
+    z_approach_mm: 60.0        # Z height to approach from (above platter)
+    a_deg: 90.0                # Arm faces turntable at this angle
+
+  queue_stack:
+    x_mm: 50.0
+    slot_z_mm: [20.0, 60.0, 100.0, 140.0, 180.0]   # Z heights per slot
+    a_deg: 0.0                 # Arm faces stack at this angle
+
+  safe_park:
+    x_mm: 500.0
+    z_mm: 120.0
+    a_deg: 180.0               # Arm points away from both ends
+
+homing:
+  safe_zone:
+    x_min_mm: 300.0
+    x_max_mm: 700.0
+    z_clear_mm: 120.0          # Z height that clears turntable and stack
+    a_park_deg: 180.0
+
+  turntable:
+    x_center_mm: 950.0
+    x_danger_mm: 800.0         # X > this → near turntable regime
+    platter_height_mm: 45.0
+
+  record_stack:
+    x_center_mm: 50.0
+    x_danger_mm: 200.0         # X < this AND pointing at stack → IN_STACK
+    x_clear_mm: 250.0          # X > this → safely clear of stack
+    a_center_deg: 0.0          # Angle directly into the stack
+    a_tolerance_deg: 15.0      # Max angular misalignment allowed for retract
+    shelf_count: 5
+    shelf_pitch_mm: 40.0       # Distance between shelf floors
+    shelf_clearance_mm: 20.0   # Usable space per slot (above floor)
+
+  velocities:
+    stack_retract_mmps: 5.0    # X retract from inside stack — slowest / most cautious
+    z_initial_up_mmps: 10.0    # Z up to clear height during homing
+    x_to_safe_zone_mmps: 20.0  # X move to safe middle zone
+    a_emergency_park_dps: 5.0  # A rotate to park when in dangerous position
+    a_normal_home_dps: 30.0    # A homing move to endstop
+    x_home_mmps: 40.0          # X homing to endstop
+    z_home_mmps: 20.0          # Z homing to endstop
+
+safety:
+  lidar:
+    warning_radius_mm: 400.0   # Scale to 25% inside this radius
+    stop_radius_mm: 200.0      # Halt inside this radius
+  a_axis:
+    min_safe_deg: 30.0         # A < this → might point toward wall
+    max_safe_deg: 330.0        # A > this → might point toward wall
+  stallguard:
+    homing_threshold: 10       # Very sensitive during homing
+    operating_threshold: 4     # Less sensitive when carrying a record
+
+grip:
+  open_pulse_us: 2000          # Servo pulse width for open gripper
+  close_pulse_us: 1000         # Servo pulse width for closed gripper
+  tof_contact_mm: 15           # ToF reading that confirms grip contact (≤ this = gripped)
+  tof_open_mm: 60              # ToF reading that confirms open (≥ this = no record)
+  retry_max: 3                 # Max grip attempts before fault
+
+flip:
+  servo_pulse_a_us: 1500       # Pulse for side A position
+  servo_pulse_b_us: 500        # Pulse for side B (180° flip)
+
+player:
+  play_pulse_us: 1800          # Servo pulse to press play
+  stop_pulse_us: 1200          # Servo pulse for stop / lifted
+  speed_33_pulse_us: 1500      # Speed selector for 33 RPM
+  speed_45_pulse_us: 2000      # Speed selector for 45 RPM
+
+turntable_monitor:
+  progress_threshold: 0.92     # Tonearm progress fraction that triggers record swap
+  hue_min: 20                  # HSV hue range for tonearm colour detection
+  hue_max: 40
+  sat_min: 100
+  val_min: 100

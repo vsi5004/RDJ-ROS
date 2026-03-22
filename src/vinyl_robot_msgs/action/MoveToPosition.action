@@ -1,0 +1,27 @@
+# Move all three linear/rotary axes to the specified position simultaneously.
+# The coordinator converts to microsteps, applies safety velocity scaling,
+# writes RPDOs for all axes, and gates start with a SYNC broadcast.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+float64 x_mm
+float64 z_mm
+float64 a_deg
+float64 velocity_scale   # 0.0–1.0, multiplied against configured max velocity
+bool skip_x              # Set true to leave X axis unchanged
+bool skip_z              # Set true to leave Z axis unchanged
+bool skip_a              # Set true to leave A axis unchanged
+---
+# ── Result ────────────────────────────────────────────────────────────────────
+bool success
+string error_msg
+float64 x_final_mm
+float64 z_final_mm
+float64 a_final_deg
+---
+# ── Feedback (published at ~50 Hz while moving) ───────────────────────────────
+float64 x_actual_mm
+float64 z_actual_mm
+float64 a_actual_deg
+bool x_in_position
+bool z_in_position
+bool a_in_position

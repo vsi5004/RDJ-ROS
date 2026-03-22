@@ -1,0 +1,12 @@
+# Rotate the record 180 degrees (flip from side A to side B or vice versa).
+# Commands the flip servo on the Pincher node.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+# (empty — always flips 180 degrees)
+---
+# ── Result ────────────────────────────────────────────────────────────────────
+bool success
+string error_msg
+---
+# ── Feedback ──────────────────────────────────────────────────────────────────
+# (empty)

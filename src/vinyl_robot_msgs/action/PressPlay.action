@@ -1,0 +1,11 @@
+# Press or release the turntable play/stop lever via the Player servo.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+bool press    # true = press play, false = lift to stop position
+---
+# ── Result ────────────────────────────────────────────────────────────────────
+bool success
+string error_msg
+---
+# ── Feedback ──────────────────────────────────────────────────────────────────
+# (empty)

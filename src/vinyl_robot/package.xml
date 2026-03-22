@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vinyl_robot</name>
+  <version>0.1.0</version>
+  <description>
+    Top-level launch package for the RDJ vinyl robot.
+    bringup.launch.py       — real hardware (Toradex + CAN bus + SICK LiDAR)
+    mock_bringup.launch.py  — simulation (no hardware, vcan0, mock canopen master)
+  </description>
+  <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
+  <license>MIT</license>
+
+  <depend>motion_coordinator</depend>
+  <depend>lidar_safety</depend>
+  <depend>turntable_monitor</depend>
+  <depend>state_machine</depend>
+  <depend>led_controller</depend>
+  <depend>diagnostics_aggregator</depend>
+  <depend>web_interface</depend>
+  <depend>mock_nodes</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

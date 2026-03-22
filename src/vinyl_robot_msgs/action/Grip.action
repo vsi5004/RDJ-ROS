@@ -1,0 +1,13 @@
+# Open or close the pincher gripper.
+# After the servo moves, reads the ToF sensor to confirm grip state.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+bool close    # true = close gripper (grip record), false = open
+---
+# ── Result ────────────────────────────────────────────────────────────────────
+bool success
+float32 tof_mm    # ToF reading after grip (confirms contact / release)
+string error_msg
+---
+# ── Feedback ──────────────────────────────────────────────────────────────────
+# (empty — servo moves are quick)

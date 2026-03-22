@@ -1,0 +1,382 @@
+[FileInfo]
+FileName=servo_node.eds
+FileVersion=1
+FileRevision=1
+EDSVersion=4.0
+Description=Servo node EDS for RDJ vinyl robot — Pincher (node_id=4) and Player (node_id=5)
+CreationTime=12:00AM
+CreationDate=01-01-2025
+CreatedBy=RDJ Robot
+ModificationTime=12:00AM
+ModificationDate=01-01-2025
+ModifiedBy=RDJ Robot
+
+[DeviceInfo]
+VendorName=RDJ
+VendorNumber=0x00000001
+ProductName=ServoNode
+ProductNumber=0x00000004
+RevisionNumber=0x00000001
+OrderCode=
+BaudRate_10=0
+BaudRate_20=0
+BaudRate_50=0
+BaudRate_125=0
+BaudRate_250=0
+BaudRate_500=0
+BaudRate_800=0
+BaudRate_1000=1
+SimpleBootUpMaster=0
+SimpleBootUpSlave=1
+Granularity=0
+DynamicChannelsSupported=0
+GroupMessaging=0
+NrOfRXPDO=1
+NrOfTXPDO=1
+LSS_Supported=0
+
+[DummyUsage]
+Dummy0001=0
+Dummy0002=0
+Dummy0003=0
+Dummy0004=0
+Dummy0005=0
+Dummy0006=0
+Dummy0007=0
+
+[Comments]
+Lines=0
+
+[ObjectCount]
+SupportedObjects=18
+1=0x1000
+2=0x1001
+3=0x1017
+4=0x1018
+5=0x1400
+6=0x1600
+7=0x1800
+8=0x1A00
+9=0x2000
+10=0x2001
+11=0x2002
+12=0x2003
+13=0x2004
+14=0x2005
+15=0x2300
+16=0x2301
+17=0x2302
+18=0x2310
+
+; ─────────────────────────────────────────────────────────────────────────────
+; CANopen mandatory
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1000]
+ParameterName=Device type
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x000F0191
+PDOMapping=0
+
+[1001]
+ParameterName=Error register
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=0
+
+[1017]
+ParameterName=Producer heartbeat time
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=100
+PDOMapping=0
+
+[1018]
+ParameterName=Identity object
+ObjectType=0x9
+SubNumber=0x5
+
+[1018sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x4
+PDOMapping=0
+
+[1018sub1]
+ParameterName=Vendor-ID
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000001
+PDOMapping=0
+
+[1018sub2]
+ParameterName=Product code
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000004
+PDOMapping=0
+
+[1018sub3]
+ParameterName=Revision number
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000001
+PDOMapping=0
+
+[1018sub4]
+ParameterName=Serial number
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; RPDO1 — master → node: servo targets + LED/control
+; COB-ID for Pincher: 0x304  Player: 0x305
+; Layout: servo1(U16) servo2(U16) led_or_ctrl(U32)
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1400]
+ParameterName=Receive PDO Communication Parameter 1
+ObjectType=0x9
+SubNumber=0x3
+
+[1400sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x2
+PDOMapping=0
+
+[1400sub1]
+ParameterName=COB-ID use by RPDO1
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=$NODEID+0x00000300
+PDOMapping=0
+
+[1400sub2]
+ParameterName=Transmission type
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0xFE
+PDOMapping=0
+
+[1600]
+ParameterName=Receive PDO Mapping Parameter 1
+ObjectType=0x9
+SubNumber=0x4
+
+[1600sub0]
+ParameterName=Number of mapped objects
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x3
+PDOMapping=0
+
+[1600sub1]
+ParameterName=1st mapped object (Servo 1 target UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x23000010
+PDOMapping=0
+
+[1600sub2]
+ParameterName=2nd mapped object (Servo 2 target UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x23010010
+PDOMapping=0
+
+[1600sub3]
+ParameterName=3rd mapped object (Control word UINT8 / LED UINT32 — node specific)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x20040008
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; TPDO1 — node → master: servo actuals, ToF, status
+; COB-ID for Pincher: 0x284  Player: 0x285
+; Layout: servo1(U16) servo2(U16) tof(U16) status(U8)
+; ─────────────────────────────────────────────────────────────────────────────
+
+[1800]
+ParameterName=Transmit PDO Communication Parameter 1
+ObjectType=0x9
+SubNumber=0x3
+
+[1800sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x2
+PDOMapping=0
+
+[1800sub1]
+ParameterName=COB-ID use by TPDO1
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=$NODEID+0x00000280
+PDOMapping=0
+
+[1800sub2]
+ParameterName=Transmission type
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x01
+PDOMapping=0
+
+[1A00]
+ParameterName=Transmit PDO Mapping Parameter 1
+ObjectType=0x9
+SubNumber=0x5
+
+[1A00sub0]
+ParameterName=Number of mapped objects
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x4
+PDOMapping=0
+
+[1A00sub1]
+ParameterName=1st mapped object (Servo 1 actual UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x23000010
+PDOMapping=0
+
+[1A00sub2]
+ParameterName=2nd mapped object (Servo 2 actual UINT16)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x23010010
+PDOMapping=0
+
+[1A00sub3]
+ParameterName=3rd mapped object (ToF distance UINT16 — Pincher only, 0 on Player)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x23020010
+PDOMapping=0
+
+[1A00sub4]
+ParameterName=4th mapped object (Status word UINT8)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x20030008
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; Common application objects
+; ─────────────────────────────────────────────────────────────────────────────
+
+[2000]
+ParameterName=Node role
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=0
+
+[2001]
+ParameterName=Firmware version
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0x0100
+PDOMapping=0
+
+[2002]
+ParameterName=Board temperature (deg C x10)
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0x0000
+PDOMapping=0
+
+[2003]
+ParameterName=Status word
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x00
+PDOMapping=1
+
+[2004]
+ParameterName=Control word
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0x00
+PDOMapping=1
+
+[2005]
+ParameterName=Uptime (ms)
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00000000
+PDOMapping=0
+
+; ─────────────────────────────────────────────────────────────────────────────
+; Servo objects
+; ─────────────────────────────────────────────────────────────────────────────
+
+[2300]
+ParameterName=Servo 1 position (pulse width microseconds)
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=1500
+PDOMapping=1
+
+[2301]
+ParameterName=Servo 2 position (pulse width microseconds)
+ObjectType=0x7
+DataType=0x0006
+AccessType=rw
+DefaultValue=1500
+PDOMapping=1
+
+[2302]
+ParameterName=ToF distance mm (Pincher only, 0xFFFF on Player)
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0xFFFF
+PDOMapping=1
+
+[2310]
+ParameterName=LED pattern (Player node DotStar X-rail strip)
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x00000000
+PDOMapping=0

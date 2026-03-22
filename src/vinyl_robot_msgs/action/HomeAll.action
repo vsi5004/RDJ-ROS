@@ -1,0 +1,15 @@
+# Run the full stack-aware homing sequence.
+# Phase 0 classifies current regime, then extracts from stack if needed,
+# then homes A, X, Z in order.  See docs/MOTION.md for full sequence.
+
+# ── Goal ─────────────────────────────────────────────────────────────────────
+# (empty — always homes all axes)
+---
+# ── Result ────────────────────────────────────────────────────────────────────
+bool success
+string error_msg
+---
+# ── Feedback ──────────────────────────────────────────────────────────────────
+string current_phase      # "assessing" | "stack_extraction" | "z_clear" | "x_to_safe"
+                          # | "a_homing" | "x_homing" | "z_homing" | "done"
+uint8 axes_homed          # Bitmask: bit0=X, bit1=Z, bit2=A

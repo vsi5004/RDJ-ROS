@@ -1,0 +1,29 @@
+# ros2_control FakeSystem configuration for simulation / x86 development.
+# Joints immediately reach commanded positions (no dynamics).
+# Swap this for real hardware YAML when deploying to Toradex.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 50             # Hz — matches SYNC period
+
+vinyl_robot:
+  ros__parameters:
+    type: fake_components/GenericSystem
+    fake_sensor_commands: true  # State interfaces mirror command interfaces instantly
+    joints:
+      - x_axis
+      - z_axis
+      - a_axis
+    command_interfaces:
+      - position
+      - velocity
+    state_interfaces:
+      - position
+      - velocity
+
+joint_state_broadcaster:
+  ros__parameters:
+    joints:
+      - x_axis
+      - z_axis
+      - a_axis

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>web_interface</name>
+  <version>0.1.0</version>
+  <description>
+    rosbridge_websocket bridge + static web UI for phone/browser control.
+    Serves HTML/JS at http://robot-ip:8080, WebSocket at ws://robot-ip:9090.
+  </description>
+  <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>ros-humble-rosbridge-suite</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

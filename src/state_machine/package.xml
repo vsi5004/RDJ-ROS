@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>state_machine</name>
+  <version>0.1.0</version>
+  <description>BehaviorTree.CPP orchestrator for the record-handling workflow.</description>
+  <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>vinyl_robot_msgs</depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

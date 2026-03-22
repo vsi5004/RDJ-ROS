@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lidar_safety</name>
+  <version>0.1.0</version>
+  <description>
+    SICK TIM571 LiDAR safety zone monitor.
+    Defines dynamic safety zones that rotate with the A axis.
+    Publishes velocity scale and e-stop signal to motion_coordinator.
+  </description>
+  <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>vinyl_robot_msgs</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

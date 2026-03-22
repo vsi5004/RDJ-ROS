@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>turntable_monitor</name>
+  <version>0.1.0</version>
+  <description>
+    Camera-based tonearm position tracker.
+    Processes /camera/image_raw to detect tonearm centroid and map to radial progress.
+    Publishes /turntable/progress (0.0 = outer groove, 1.0 = run-out).
+  </description>
+  <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>vinyl_robot_msgs</depend>
+
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -478,8 +478,24 @@ class MotionCoordinatorNode(Node):
                 ramp_mode=RAMP_POSITION,
             )
 
+        # Log what was commanded (helps diagnose unexpected axis movements).
+        axes_info = []
+        if not goal.skip_x: axes_info.append(f"X→{goal.x_mm:.0f}mm")
+        if not goal.skip_z: axes_info.append(f"Z→{goal.z_mm:.0f}mm")
+        if not goal.skip_a: axes_info.append(f"A→{goal.a_deg:.0f}°")
+        self.get_logger().info(
+            f"[move] {', '.join(axes_info) or 'no axes'}"
+            f" (scale={combined_scale:.2f})"
+        )
+
+        # Brief settle: give RPDOs time to reach the mock and at least one TPDO
+        # to come back with updated targets before polling in_position.
+        # Without this, the first poll sees the *old* in_position (True from the
+        # previous move) and returns SUCCESS before the arm moves at all.
+        time.sleep(0.1)
+
         timeout = 60.0
-        elapsed = 0.0
+        elapsed = 0.1
         while elapsed < timeout:
             if goal_handle.is_cancel_requested:
                 self._halt_all()

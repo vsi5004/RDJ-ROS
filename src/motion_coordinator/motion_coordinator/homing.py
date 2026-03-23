@@ -206,9 +206,13 @@ def run_homing(node: 'MotionCoordinatorNode', goal_handle) -> bool:
         ramp_mode=RAMP_POSITION,
     )
 
+    # Brief settle: give the RPDO time to reach the drive and at least one TPDO
+    # to come back with the homed bit cleared before we start polling.
+    time.sleep(0.1)
+
     # Wait for homed bit
     timeout = 20.0
-    elapsed = 0.0
+    elapsed = 0.1
     while not node.a_homed():
         if check_cancel():
             return False
@@ -242,7 +246,8 @@ def run_homing(node: 'MotionCoordinatorNode', goal_handle) -> bool:
         ctrl_word=CW_ENABLE | CW_HOME,
         ramp_mode=RAMP_POSITION,
     )
-    elapsed = 0.0
+    time.sleep(0.1)
+    elapsed = 0.1
     while not node.x_homed():
         if check_cancel():
             return False
@@ -274,7 +279,8 @@ def run_homing(node: 'MotionCoordinatorNode', goal_handle) -> bool:
         ctrl_word=CW_ENABLE | CW_HOME,
         ramp_mode=RAMP_POSITION,
     )
-    elapsed = 0.0
+    time.sleep(0.1)
+    elapsed = 0.1
     while not node.z_homed():
         if check_cancel():
             return False
@@ -340,7 +346,10 @@ def _ensure_z_high(node, cfg, vel, check_cancel) -> bool:
 
 
 def _wait_in_position(node, axis_name: str, timeout: float = 15.0) -> bool:
-    elapsed = 0.0
+    # Sleep before first poll so the RPDO has time to propagate and at least one
+    # TPDO comes back reflecting the new target (avoids reading stale in_position).
+    time.sleep(0.1)
+    elapsed = 0.1
     while elapsed < timeout:
         state = node.node_states[axis_name]
         if state.in_position and not state.moving:

@@ -85,9 +85,9 @@ class MockStepperNode:
             self._start_homing()
 
     def _start_homing(self) -> None:
-        """Simulate homing: ramp to zero and set homed bit."""
+        """Simulate homing: clear homed flag, ramp to zero, re-set when there."""
+        self.homed = False   # must travel to endstop before being considered homed
         self.target_pos = 0
-        # homed bit will be set when actual_pos reaches 0
 
     def tick(self, dt: float) -> None:
         """Advance simulation by one SYNC tick."""
@@ -160,10 +160,7 @@ class MockServoNode:
         self.servo1_us = struct.unpack_from('<H', data, 0)[0]
         self.servo2_us = struct.unpack_from('<H', data, 2)[0]
 
-        # Simulate Pincher ToF based on grip position
-        if self.name == 'pincher':
-            grip_cfg_open = 2000   # open pulse — matches robot_params.yaml
-            self.tof_mm = 10 if self.servo1_us < grip_cfg_open - 100 else 80
+        # Pincher ToF is computed in _sync_tick from Z height (see below).
 
     def build_tpdo(self) -> bytes:
         data = struct.pack('<H', self.servo1_us)
@@ -259,6 +256,23 @@ class MockCANopenMaster(Node):
             msg = UInt8MultiArray()
             msg.data = list(data)
             self._tpdo_pubs[name].publish(msg)
+
+        # Update pincher ToF before publishing.
+        # The real sensor faces downward and reads floor clearance when the arm
+        # is high, and record-contact distance when near the platter.
+        # Two zones based on Z height:
+        #   Z < 70 mm  — grip-detection zone: closed=10 mm, open=80 mm
+        #   Z ≥ 70 mm  — clearance zone:      tof = Z * 1.67  (120 mm → 200 mm)
+        # This lets FlipClearanceCheck (≥178 mm) pass at safe-park height (120 mm)
+        # while still giving realistic grip feedback at platter height (45 mm).
+        z_axis = self._steppers['z_axis']
+        z_mm = z_axis.actual_pos / z_axis.steps_per_unit
+        pincher = self._servos['pincher']
+        grip_open = pincher.servo1_us >= (2000 - 100)
+        if z_mm < 70.0:
+            pincher.tof_mm = 80 if grip_open else 10
+        else:
+            pincher.tof_mm = int(z_mm * 1.67)
 
         # Publish servo TPDOs
         for name, node in self._servos.items():

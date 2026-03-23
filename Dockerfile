@@ -42,6 +42,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Diagnostics
     ros-humble-diagnostic-updater \
     ros-humble-diagnostic-aggregator \
+    # Behavior tree (state machine)
+    ros-humble-py-trees \
+    ros-humble-py-trees-ros \
+    ros-humble-py-trees-ros-interfaces \
     # Python build tools
     python3-colcon-common-extensions \
     python3-pip \
@@ -65,12 +69,18 @@ RUN . /opt/ros/humble/setup.sh && \
     rosdep update --rosdistro humble && \
     rosdep install --from-paths src --ignore-src -r -y
 
-# ── Bundle roslibjs (served statically — no CDN dependency at runtime) ────────
+# ── Bundle JS libraries (served statically — no CDN dependency at runtime) ────
 RUN python3 -c "\
 import urllib.request; \
 urllib.request.urlretrieve(\
   'https://unpkg.com/roslib@1/build/roslib.min.js', \
-  'src/web_interface/web/roslib.min.js')"
+  'src/web_interface/web/roslib.min.js'); \
+urllib.request.urlretrieve(\
+  'https://unpkg.com/three@0.128.0/build/three.min.js', \
+  'src/web_interface/web/three.min.js'); \
+urllib.request.urlretrieve(\
+  'https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js', \
+  'src/web_interface/web/OrbitControls.js')"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 RUN . /opt/ros/humble/setup.sh && \

@@ -80,11 +80,16 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ── State machine stub ────────────────────────────────────────────────────
+    # ── State machine — full BehaviorTree implementation ──────────────────────
     state_machine = Node(
         package='state_machine',
         executable='state_machine',
         name='state_machine',
+        parameters=[{
+            'config_path': config_file,
+            'tick_rate_hz': 10.0,
+            'progress_threshold': 0.92,
+        }],
         output='screen',
     )
 

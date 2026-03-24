@@ -21,12 +21,13 @@ services:
   # Only needed if CAN is NOT configured via systemd can0.service on the host.
   # If can0.service is active, remove this service entirely.
   can-setup:
-    image: torizon/debian:4
+    image: debian:bookworm-slim
     network_mode: host
     cap_add:
       - NET_ADMIN
     command: >
       sh -c "
+        apt-get update -qq && apt-get install -y -qq iproute2 can-utils &&
         ip link set can0 type can bitrate 1000000 restart-ms 100 &&
         ip link set can0 up &&
         echo 'CAN0 up at 1Mbit/s' &&
@@ -71,8 +72,11 @@ services:
     network_mode: host
     cap_add:
       - NET_ADMIN
-    devices:
-      - /dev/video0:/dev/video0
+      - NET_RAW
+    # Camera device passthrough — add back when deploying to Toradex with camera:
+    #   devices:
+    #     - /dev/video0:/dev/video0
+    # Or pass at runtime: docker run --device /dev/video0:/dev/video0 ...
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

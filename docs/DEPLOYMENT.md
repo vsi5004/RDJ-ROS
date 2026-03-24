@@ -122,7 +122,8 @@ RDJ-ROS/
 │   ├── vinyl_robot_msgs/ ← custom msgs/actions (CMake)
 │   ├── vinyl_robot/      ← launch files only (CMake)
 │   ├── motion_coordinator/  ← core node: homing, actions, jog, servo raw, estop
-│   ├── mock_nodes/          ← 50 Hz CAN simulation
+│   ├── mock_nodes/          ← 50 Hz CAN simulation (sim only)
+│   ├── canopen_bridge/      ← ProxyDriver COData ↔ UInt8MultiArray PDO bridge (hardware only)
 │   ├── lidar_safety/        ← safety zones (mock_mode param)
 │   ├── turntable_monitor/   ← tonearm tracking (mock_mode param)
 │   ├── state_machine/       ← orchestrator stub (HomeAll wired)

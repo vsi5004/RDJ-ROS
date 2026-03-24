@@ -14,12 +14,15 @@ The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker.
 | `web_interface` | ✅ Complete | rosbridge + dark UI with 3D visualizer, jog panel, servo calibration, controls |
 | `state_machine` | ✅ Complete | Full py_trees behavior tree; InitialLoad, OneCycle, flip/swap/halt, fault recovery |
 | `led_controller` | ✅ Complete | Fill-to-target animations, homing sweep, publishes /led/pixels at 20 Hz |
+| `canopen_bridge` | ✅ Complete | Translates ProxyDriver COData ↔ UInt8MultiArray PDOs; 32 codec tests |
 | `diagnostics_aggregator` | ✅ Functional | Publishes DiagnosticArray at 1 Hz |
 | `record_identifier` | ❌ Not started | Optional future package |
 
 ## Node Graph
 
-1. **mock_canopen_master** *(sim only)* — Simulates all 5 CAN nodes at 50 Hz with ramp physics. Publishes `/canopen/<name>/tpdo1`, subscribes `/canopen/<name>/rpdo1`. Replaced at hardware time by `canopen_master_driver` + `canopen_proxy_driver`.
+1. **mock_canopen_master** *(sim only)* — Simulates all 5 CAN nodes at 50 Hz with ramp physics. Publishes `/canopen/<name>/tpdo1`, subscribes `/canopen/<name>/rpdo1`. Replaced at hardware time by `canopen_master_driver` + `canopen_proxy_driver` + `canopen_bridge`.
+
+1a. **canopen_bridge** *(hardware only)* — Translates between `ros2_canopen` ProxyDriver's per-entry `canopen_interfaces/msg/COData` interface and the packed `std_msgs/UInt8MultiArray` PDO interface that `motion_coordinator` expects. Accumulates incoming COData entries per node into a `{(OD index, subindex): value}` dict and publishes assembled TPDOs at 50 Hz. Immediately disassembles incoming RPDOs and forwards each OD entry as a COData message to the ProxyDriver. Uses a pure-function codec (`codec.py`) with no ROS dependency, fully tested with 32 pytest cases.
 
 2. **motion_coordinator** — Core intelligence node. Converts mm/deg to microsteps, enforces safety scaling, orchestrates homing, hosts action servers, handles jog and raw servo commands.
 
@@ -40,10 +43,22 @@ The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker.
 ## Topics Reference
 
 ### CAN Interface (mock or real hardware bridge)
+
+**Simulation** (`mock_canopen_master` publishes/subscribes directly):
+
 | Topic | Type | Direction |
 |---|---|---|
-| `/canopen/<name>/tpdo1` | `std_msgs/UInt8MultiArray` | Node → motion_coordinator |
-| `/canopen/<name>/rpdo1` | `std_msgs/UInt8MultiArray` | motion_coordinator → Node |
+| `/canopen/<name>/tpdo1` | `std_msgs/UInt8MultiArray` | mock_canopen_master → motion_coordinator |
+| `/canopen/<name>/rpdo1` | `std_msgs/UInt8MultiArray` | motion_coordinator → mock_canopen_master |
+
+**Hardware** (`canopen_bridge` sits between ProxyDriver and motion_coordinator):
+
+| Topic | Type | Direction |
+|---|---|---|
+| `<name>/rpd` | `canopen_interfaces/msg/COData` | ProxyDriver → canopen_bridge (one entry per PDO field) |
+| `<name>/tpd` | `canopen_interfaces/msg/COData` | canopen_bridge → ProxyDriver (one entry per PDO field) |
+| `/canopen/<name>/tpdo1` | `std_msgs/UInt8MultiArray` | canopen_bridge → motion_coordinator (assembled, 50 Hz) |
+| `/canopen/<name>/rpdo1` | `std_msgs/UInt8MultiArray` | motion_coordinator → canopen_bridge (disassembled on receipt) |
 
 Node names: `x_axis`, `z_axis`, `a_axis`, `pincher`, `player`
 

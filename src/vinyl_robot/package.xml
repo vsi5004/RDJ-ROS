@@ -11,6 +11,7 @@
   <maintainer email="todo@rdj.local">RDJ Robot</maintainer>
   <license>MIT</license>
 
+  <depend>canopen_bridge</depend>
   <depend>motion_coordinator</depend>
   <depend>lidar_safety</depend>
   <depend>turntable_monitor</depend>

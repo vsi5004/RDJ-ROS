@@ -1,0 +1,61 @@
+# ros2_canopen bus configuration — CANopen master + five proxy driver nodes
+# Loaded by canopen_master_driver at launch.
+# EDS files define the object dictionaries used for SDO config and PDO mapping.
+# @BUS_CONFIG_PATH@ is substituted at build time by CMake configure_file().
+
+options:
+  dcf_path: "@BUS_CONFIG_PATH@"
+
+master:
+  node_id: 127
+  driver: "ros2_canopen::MasterDriver"
+  package: "canopen_master_driver"
+  sync_period: 20000              # SYNC period in microseconds (50 Hz)
+  heartbeat_producer: 0           # Master does not produce heartbeat
+  heartbeat_consumer:             # Expect heartbeat from all five nodes within 250ms
+    x_axis: 250
+    z_axis: 250
+    a_axis: 250
+    pincher: 250
+    player: 250
+
+nodes:
+  x_axis:
+    node_id: 1
+    driver: "ros2_canopen::ProxyDriver"
+    package: "canopen_proxy_driver"
+    eds: "@BUS_CONFIG_PATH@/stepper_node.eds"
+    heartbeat_producer: 100       # Node produces heartbeat every 100ms
+    polling: false                # Use interrupt-driven TPDO, not polling
+
+  z_axis:
+    node_id: 2
+    driver: "ros2_canopen::ProxyDriver"
+    package: "canopen_proxy_driver"
+    eds: "@BUS_CONFIG_PATH@/stepper_node.eds"
+    heartbeat_producer: 100
+    polling: false
+
+  a_axis:
+    node_id: 3
+    driver: "ros2_canopen::ProxyDriver"
+    package: "canopen_proxy_driver"
+    eds: "@BUS_CONFIG_PATH@/a_axis_node.eds"
+    heartbeat_producer: 100
+    polling: false
+
+  pincher:
+    node_id: 4
+    driver: "ros2_canopen::ProxyDriver"
+    package: "canopen_proxy_driver"
+    eds: "@BUS_CONFIG_PATH@/servo_node.eds"
+    heartbeat_producer: 100
+    polling: false
+
+  player:
+    node_id: 5
+    driver: "ros2_canopen::ProxyDriver"
+    package: "canopen_proxy_driver"
+    eds: "@BUS_CONFIG_PATH@/servo_node.eds"
+    heartbeat_producer: 100
+    polling: false

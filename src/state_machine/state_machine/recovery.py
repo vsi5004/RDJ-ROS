@@ -39,11 +39,9 @@ def build_recovery_subtree(node: Node, config: dict) -> py_trees.behaviour.Behav
         memory=True,
         children=[
             # 1. Signal fault immediately
-            PublishLEDAction("FAULT", node),
-
+            PublishLEDAction("FAULT", node._led_pub),
             # 2. Open gripper — always safe even if already open
             GripAction(node, close=False, name="RecoveryGripOpen"),
-
             # 3. Raise Z to safe height before moving X (avoid collision with stack shelves)
             MoveToPositionAction(
                 name="RecoveryZToClear",
@@ -52,7 +50,6 @@ def build_recovery_subtree(node: Node, config: dict) -> py_trees.behaviour.Behav
                 skip_x=True,
                 skip_a=True,
             ),
-
             # 4. Move to safe park position (X + A together, Z already at clearance)
             MoveToPositionAction(
                 name="RecoverySafePark",
@@ -61,10 +58,8 @@ def build_recovery_subtree(node: Node, config: dict) -> py_trees.behaviour.Behav
                 z_mm=park["z_mm"],
                 a_deg=park["a_deg"],
             ),
-
             # 5. Update LED to show parked-in-fault state
-            PublishLEDAction("FAULT_PARKED", node),
-
+            PublishLEDAction("FAULT_PARKED", node._led_pub),
             # 6. Hold until operator resolves fault and re-homes
             WaitForManualClear(),
         ],

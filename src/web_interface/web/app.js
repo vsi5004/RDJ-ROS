@@ -21,10 +21,20 @@ const servoState = {
 };
 
 // ROS objects created on connect
-let jogPub       = null;
-let servoRawPub  = null;
-let cmdPub       = null;
-let estopPub     = null;
+let jogPub          = null;
+let servoRawPub     = null;
+let cmdPub          = null;
+let estopPub        = null;
+let selectSlotPub   = null;
+let playModePub     = null;
+
+// Queue and player state
+let currentSlotIdx  = -1;
+let pendingSlotIdx  = -1;
+let currentPlayMode = 'SEQUENTIAL';
+let playerHasRecord = false;
+let currentSide     = 'A';    // 'A' or 'B' — from /state_machine/current_side
+let startSent       = false;  // true after operator presses Start Playing (one-shot)
 
 // Software e-stop state (tracked client-side for immediate UI feedback)
 let swEstopActive = false;
@@ -46,6 +56,14 @@ const CFG = {
   flipBUs:     500,    // µs — side B
   recordR:     152,    // mm — radius of 12" vinyl
 };
+
+// ── LED Visualizer state ───────────────────────────────────────────────────────
+
+const LED_STRIP_COUNT = 144;
+const LED_RING_COUNT  = 60;
+
+let stripRects = [];   // SVG <rect> elements for X-rail strip
+let ringArcs   = [];   // SVG <path> elements for A-axis ring
 
 // ── Three.js state ─────────────────────────────────────────────────────────────
 
@@ -85,7 +103,12 @@ function setConnected(state) {
     isHomed = false;
     isEstop = false;
     updateEstopUI();
+    const flipBtn  = document.getElementById('flip-btn');
+    if (flipBtn)  flipBtn.disabled  = true;
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn) startBtn.disabled = true;
   }
+  _updateStartBtn();
 }
 
 function connect() {
@@ -126,6 +149,20 @@ function subscribeTopics() {
     messageType: 'std_msgs/msg/Bool',
   });
 
+  // Publisher for slot override
+  selectSlotPub = new ROSLIB.Topic({
+    ros,
+    name:        '/user/select_record',
+    messageType: 'std_msgs/msg/UInt8',
+  });
+
+  // Publisher for play mode
+  playModePub = new ROSLIB.Topic({
+    ros,
+    name:        '/user/play_mode',
+    messageType: 'std_msgs/msg/String',
+  });
+
   // /motion/status — primary telemetry feed
   new ROSLIB.Topic({ ros, name: '/motion/status',
     messageType: 'vinyl_robot_msgs/msg/MotionStatus' })
@@ -140,27 +177,75 @@ function subscribeTopics() {
     document.getElementById('progress-val').textContent = (pct * 100).toFixed(0) + '%';
   });
 
-  // /safety/estop
-  new ROSLIB.Topic({ ros, name: '/safety/estop',
-    messageType: 'std_msgs/msg/Bool' })
+  // /safety/status — hardware e-stop and velocity scale from lidar_safety
+  new ROSLIB.Topic({ ros, name: '/safety/status',
+    messageType: 'vinyl_robot_msgs/msg/SafetyStatus' })
   .subscribe(msg => {
-    isEstop = msg.data;
+    isEstop = msg.estop;
     const el = document.getElementById('estop-indicator');
     el.textContent = isEstop ? '● ACTIVE' : '○ OK';
     el.className = 'status-value ' + (isEstop ? 'bad' : 'ok');
     updateEstopUI();
-    if (isEstop) log('⚠ Hardware E-STOP active');
+    if (isEstop) log(`⚠ Hardware E-STOP active (${msg.reason || 'lidar'})`);
   });
 
   // /canopen/pincher/tpdo1 — bytes[0-1]=S1 grip µs, bytes[2-3]=S2 flip µs (uint16 LE)
   new ROSLIB.Topic({ ros, name: '/canopen/pincher/tpdo1',
     messageType: 'std_msgs/msg/UInt8MultiArray' })
   .subscribe(msg => {
-    const b = msg.data;
+    const b = decodeBytes(msg.data);
     if (!b || b.length < 4) return;
     const s1 = b[0] | (b[1] << 8);
     const s2 = b[2] | (b[3] << 8);
     updateGripper(s1, s2);
+  });
+
+  // /led/pixels — per-LED RGB from led_controller at ~20 Hz
+  new ROSLIB.Topic({ ros, name: '/led/pixels',
+    messageType: 'std_msgs/msg/UInt8MultiArray' })
+  .subscribe(onLedPixels);
+
+  // /led/pattern — current semantic LED pattern from state machine
+  new ROSLIB.Topic({ ros, name: '/led/pattern',
+    messageType: 'std_msgs/msg/String' })
+  .subscribe(msg => {
+    const el = document.getElementById('led-pattern-label');
+    if (el) el.textContent = `pattern: ${msg.data}`;
+  });
+
+  // /state_machine/tip — active behaviour tree node name (10 Hz)
+  new ROSLIB.Topic({ ros, name: '/state_machine/tip',
+    messageType: 'std_msgs/msg/String' })
+  .subscribe(msg => {
+    const el = document.getElementById('sm-tip');
+    if (el) el.textContent = msg.data;
+  });
+
+  // /state_machine/status — composite: slot, side, player occupancy, initial_loaded
+  new ROSLIB.Topic({ ros, name: '/state_machine/status',
+    messageType: 'vinyl_robot_msgs/msg/StateMachineStatus' })
+  .subscribe(msg => {
+    // Slot index only meaningful once initial_loaded; before that all discs are in slots
+    if (msg.initial_loaded) {
+      currentSlotIdx = msg.slot_idx;
+      if (pendingSlotIdx === currentSlotIdx) pendingSlotIdx = -1;
+    }
+    updateSlotUI();
+
+    // Disc side drives 3D orientation from state machine knowledge, not servo S2
+    currentSide = msg.current_side;
+    if (heldRec3d) {
+      heldRec3d.rotation.x = (currentSide === 'A') ? Math.PI : 0;
+    }
+
+    // Player occupancy — enables Flip Now; hides Start Playing once first disc is loaded
+    playerHasRecord = msg.player_has_record;
+    const flipBtn = document.getElementById('flip-btn');
+    if (flipBtn) flipBtn.disabled = !playerHasRecord || !connected;
+    if (playerHasRecord) {
+      const startBtn = document.getElementById('start-btn');
+      if (startBtn) startBtn.style.display = 'none';
+    }
   });
 }
 
@@ -232,6 +317,7 @@ function onMotionStatus(msg) {
 function updateJogEnabled() {
   const disabled = !connected || !isHomed || isEstop;
   document.querySelectorAll('.jog-btn').forEach(b => b.disabled = disabled);
+  _updateStartBtn();
 }
 
 function jogAxis(axis, delta) {
@@ -284,12 +370,74 @@ function updateEstopUI() {
   updateJogEnabled();
 }
 
+// ── Start Playing ─────────────────────────────────────────────────────────────
+
+function _updateStartBtn() {
+  const btn = document.getElementById('start-btn');
+  if (!btn) return;
+  // Available only when connected, homed, and not yet triggered
+  btn.disabled = !connected || !isHomed || startSent || isEstop;
+  btn.textContent = startSent ? 'Starting…' : 'Start Playing';
+}
+
+function triggerStart() {
+  if (!connected || startSent) return;
+  startSent = true;
+  _updateStartBtn();
+  sendCmd('start');
+  log('▶ Start Playing — loading slot 0 onto player');
+}
+
 // ── High-level commands ───────────────────────────────────────────────────────
 
 function sendCmd(cmd) {
   if (!connected) { log('Not connected'); return; }
   cmdPub.publish(new ROSLIB.Message({ data: cmd }));
   log(`Command: ${cmd}`);
+}
+
+// ── Queue slot and play mode controls ─────────────────────────────────────────
+
+function selectSlot(idx) {
+  if (!connected) { log('Not connected'); return; }
+  pendingSlotIdx = idx;
+  updateSlotUI();
+  selectSlotPub.publish(new ROSLIB.Message({ data: idx }));
+  log(`Queue: override → slot ${idx}`);
+}
+
+function setPlayMode(mode) {
+  if (!connected) { log('Not connected'); return; }
+  currentPlayMode = mode;
+  updateModeUI();
+  playModePub.publish(new ROSLIB.Message({ data: mode }));
+  log(`Play mode: ${mode}`);
+}
+
+function updateSlotUI() {
+  const QUEUE_SIZE = 5;
+  for (let i = 0; i < QUEUE_SIZE; i++) {
+    const btn = document.getElementById(`slot-btn-${i}`);
+    if (!btn) continue;
+    const isCurrent = (i === currentSlotIdx);
+    const isPending  = (i === pendingSlotIdx && !isCurrent);
+    const isEmpty    = isCurrent;  // that slot's record is out (on player or in gripper)
+    btn.classList.toggle('active-slot',  isCurrent);
+    btn.classList.toggle('pending-slot', isPending);
+    btn.textContent = `Slot ${i} ${isEmpty ? '○' : '●'}`;
+  }
+  const curEl = document.getElementById('current-slot');
+  if (curEl) curEl.textContent = currentSlotIdx >= 0 ? `Slot ${currentSlotIdx}` : '—';
+  const ovEl = document.getElementById('override-slot');
+  if (ovEl)  ovEl.textContent  = (pendingSlotIdx >= 0 && pendingSlotIdx !== currentSlotIdx)
+                                   ? `Slot ${pendingSlotIdx}` : '—';
+}
+
+function updateModeUI() {
+  ['SEQUENTIAL', 'SIDE_REPEAT', 'SINGLE_REPEAT'].forEach(m => {
+    const btn = document.getElementById(`mode-btn-${m}`);
+    if (btn) btn.classList.toggle('active-mode', m === currentPlayMode);
+  });
 }
 
 // ── Three.js scene ────────────────────────────────────────────────────────────
@@ -318,7 +466,9 @@ function initScene() {
   const matCarr    = new THREE.MeshLambertMaterial({ color: 0x888888 });
   const matArm     = new THREE.MeshLambertMaterial({ color: 0xff9900 });
   const matFinger  = new THREE.MeshLambertMaterial({ color: 0xcccccc });
-  const matRecord  = new THREE.MeshLambertMaterial({ color: 0x222222, side: THREE.DoubleSide });
+  const matRecord  = new THREE.MeshLambertMaterial({ color: 0x222222 });
+  const matLabelA  = new THREE.MeshLambertMaterial({ color: 0xff6600 }); // orange label — side A
+  const matLabelB  = new THREE.MeshLambertMaterial({ color: 0x2255cc }); // blue label — side B
   const matPlatter = new THREE.MeshLambertMaterial({ color: 0x333333 });
   const matSpindle = new THREE.MeshLambertMaterial({ color: 0xff9900 });
   const matSlot    = new THREE.MeshLambertMaterial({ color: 0x555555, transparent: true, opacity: 0.6 });
@@ -384,28 +534,30 @@ function initScene() {
   aGroup3d = new THREE.Group();
   zCarriage3d.add(aGroup3d);
 
-  // Shoulder — extends in +Z (toward stations). A rotation swings it left/right/back.
-  const shoulder = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, shoulderLen), matArm);
-  shoulder.position.set(0, 0, shoulderLen / 2);
-  aGroup3d.add(shoulder);
-
-  // Gripper fingers — horizontal arms extending ±X from the shoulder tip.
-  // The shoulder tip is at local z = shoulderLen. Fingers spread along X.
-  // S1 closed (1000µs): finger inner edge at x=0 (center), outer tip at record circumference.
-  // S1 open (2000µs): both fingers slide further out in ±X beyond the record edge.
+  // U-gripper: crossbar at the arm base + two forward-pointing legs that grip the record edge.
+  // Legs move in ±X to open/close. Closed (S1=1000µs): legs at ±rScale, touching disc edge.
+  // Open (S1=2000µs): legs spread outward beyond the disc.
   const rScale = CFG.recordR * CFG.scale;   // ≈ 3.04 units
-  finger1_3d = new THREE.Mesh(new THREE.BoxGeometry(rScale, 0.25, 0.3), matFinger);
-  finger1_3d.position.set(rScale / 2, 0, shoulderLen);
+
+  // Crossbar — fixed horizontal backbone connecting the carriage to the two legs (base of U)
+  const crossbar = new THREE.Mesh(new THREE.BoxGeometry(rScale * 2 + 0.7, 0.35, 0.35), matArm);
+  crossbar.position.set(0, 0, 0.175);
+  aGroup3d.add(crossbar);
+
+  // Right leg of the U — extends forward in +Z, slides in X with grip servo
+  finger1_3d = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, shoulderLen), matFinger);
+  finger1_3d.position.set(rScale, 0, shoulderLen / 2);
   aGroup3d.add(finger1_3d);
 
-  finger2_3d = new THREE.Mesh(new THREE.BoxGeometry(rScale, 0.25, 0.3), matFinger);
-  finger2_3d.position.set(-rScale / 2, 0, shoulderLen);
+  // Left leg of the U — extends forward in +Z, slides in X with grip servo
+  finger2_3d = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, shoulderLen), matFinger);
+  finger2_3d.position.set(-rScale, 0, shoulderLen / 2);
   aGroup3d.add(finger2_3d);
 
   // Held record — centered at shoulder tip, flips around X axis (axis between grip points)
   heldRec3d = new THREE.Mesh(
     new THREE.CylinderGeometry(rScale, rScale, 0.15, 48),
-    matRecord
+    [matRecord, matLabelB, matLabelA]  // [side, top(+Y=B-up), bottom(-Y=A-up)]
   );
   heldRec3d.position.set(0, 0, shoulderLen);
   heldRec3d.visible = false;
@@ -448,21 +600,99 @@ function update3DFromStatus(msg) {
   arm3d.position.x       = msg.x_mm * CFG.scale;
   zCarriage3d.position.y = msg.z_mm * CFG.scale;
   aGroup3d.rotation.y    = Math.PI - msg.a_deg * Math.PI / 180;
-  // Show held record when arm is between stack and turntable (carrying heuristic)
-  heldRec3d.visible = msg.x_mm > CFG.stackX + 50 && msg.x_mm < CFG.turntableX - 50;
 }
 
-function updateGripper(s1, s2) {
+function updateGripper(s1, _s2) {
   if (!sceneReady) return;
   // S1: grip servo. Closed (1000µs) → arms at record edge. Open (2000µs) → arms spread outward.
-  const gripT   = Math.max(0, Math.min(1, (s1 - CFG.gripCloseUs) / (CFG.gripOpenUs - CFG.gripCloseUs)));
-  const rHalf   = CFG.recordR * CFG.scale / 2;
-  const extra   = gripT * 0.8;   // up to 0.8 units beyond record edge when fully open
-  finger1_3d.position.x =  rHalf + extra;
-  finger2_3d.position.x = -(rHalf + extra);
-  // S2: flip servo. Side A (1500µs) → 0°. Side B (500µs) → 180°.
-  const flipT = Math.max(0, Math.min(1, (s2 - CFG.flipBUs) / (CFG.flipAUs - CFG.flipBUs)));
-  heldRec3d.rotation.x = flipT * Math.PI;
+  const gripT  = Math.max(0, Math.min(1, (s1 - CFG.gripCloseUs) / (CFG.gripOpenUs - CFG.gripCloseUs)));
+  const rScale = CFG.recordR * CFG.scale;
+  const extra  = gripT * 0.8;   // up to 0.8 units beyond record edge when fully open
+  finger1_3d.position.x =  rScale + extra;
+  finger2_3d.position.x = -(rScale + extra);
+  heldRec3d.visible = gripT < 0.5;   // disc appears when pinchers are closed
+  // Disc orientation is driven by currentSide (from /state_machine/status), not S2,
+  // because the mock resets the flip servo after each action — S2 is unreliable.
+  heldRec3d.rotation.x = (currentSide === 'A') ? Math.PI : 0;
+}
+
+// ── LED Visualizer ────────────────────────────────────────────────────────────
+
+function initLEDVisualizer() {
+  const svgNS = 'http://www.w3.org/2000/svg';
+
+  // Strip: 144 rect elements, each 1×4 in the viewBox "0 0 144 4"
+  const stripSvg = document.getElementById('led-strip');
+  if (stripSvg) {
+    for (let i = 0; i < LED_STRIP_COUNT; i++) {
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', i);
+      rect.setAttribute('y', 0);
+      rect.setAttribute('width', 1);
+      rect.setAttribute('height', 4);
+      rect.setAttribute('fill', '#111');
+      stripSvg.appendChild(rect);
+      stripRects.push(rect);
+    }
+  }
+
+  // Ring: 60 arc path segments (6° each), SVG arc paths on a unit circle
+  const ringSvg = document.getElementById('led-ring');
+  if (ringSvg) {
+    const outerR = 0.9;
+    const innerR = 0.6;
+    for (let i = 0; i < LED_RING_COUNT; i++) {
+      const a0 = (i * 6 - 90) * Math.PI / 180;       // offset -90° so 0° = 12 o'clock
+      const a1 = ((i + 1) * 6 - 90) * Math.PI / 180;
+      const ox0 = Math.cos(a0) * outerR, oy0 = Math.sin(a0) * outerR;
+      const ox1 = Math.cos(a1) * outerR, oy1 = Math.sin(a1) * outerR;
+      const ix1 = Math.cos(a1) * innerR, iy1 = Math.sin(a1) * innerR;
+      const ix0 = Math.cos(a0) * innerR, iy0 = Math.sin(a0) * innerR;
+      const d = [
+        `M ${ox0.toFixed(4)} ${oy0.toFixed(4)}`,
+        `A ${outerR} ${outerR} 0 0 1 ${ox1.toFixed(4)} ${oy1.toFixed(4)}`,
+        `L ${ix1.toFixed(4)} ${iy1.toFixed(4)}`,
+        `A ${innerR} ${innerR} 0 0 0 ${ix0.toFixed(4)} ${iy0.toFixed(4)}`,
+        'Z',
+      ].join(' ');
+      const path = document.createElementNS(svgNS, 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('fill', '#111');
+      path.setAttribute('stroke', '#0a0a0a');
+      path.setAttribute('stroke-width', '0.01');
+      ringSvg.appendChild(path);
+      ringArcs.push(path);
+    }
+  }
+}
+
+// rosbridge base64-encodes uint8[] fields — decode to Uint8Array if needed
+function decodeBytes(data) {
+  if (typeof data === 'string') {
+    const binaryStr = atob(data);
+    const out = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) out[i] = binaryStr.charCodeAt(i);
+    return out;
+  }
+  return data;
+}
+
+function onLedPixels(msg) {
+  const bytes = decodeBytes(msg.data);
+  if (!bytes || bytes.length < (LED_STRIP_COUNT + LED_RING_COUNT) * 3) return;
+
+  // Strip
+  for (let i = 0; i < LED_STRIP_COUNT; i++) {
+    const r = bytes[i*3], g = bytes[i*3+1], b = bytes[i*3+2];
+    if (stripRects[i]) stripRects[i].setAttribute('fill', `rgb(${r},${g},${b})`);
+  }
+
+  // Ring
+  const off = LED_STRIP_COUNT * 3;
+  for (let i = 0; i < LED_RING_COUNT; i++) {
+    const r = bytes[off + i*3], g = bytes[off + i*3+1], b = bytes[off + i*3+2];
+    if (ringArcs[i]) ringArcs[i].setAttribute('fill', `rgb(${r},${g},${b})`);
+  }
 }
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
@@ -479,6 +709,7 @@ document.addEventListener('keydown', e => {
 connect();
 
 window.addEventListener('load', () => {
+  initLEDVisualizer();
   if (typeof THREE !== 'undefined') {
     initScene();
     animate3D();

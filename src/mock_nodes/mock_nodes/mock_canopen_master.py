@@ -15,12 +15,12 @@ Topics:
   Subscribes: /canopen/<name>/rpdo1 (UInt8MultiArray, 8 bytes)
 """
 
-import math
 import struct
-import yaml
+
 import rclpy
+import yaml
 from rclpy.node import Node
-from std_msgs.msg import UInt8MultiArray, String
+from std_msgs.msg import String, UInt8MultiArray
 
 # ── Control word bits ─────────────────────────────────────────────────────────
 CW_ENABLE = 1 << 0
@@ -40,7 +40,7 @@ RAMP_POSITION = 0
 RAMP_VELOCITY_FWD = 1
 RAMP_VELOCITY_REV = 2
 
-SYNC_DT = 0.02   # 20 ms per SYNC cycle
+SYNC_DT = 0.02  # 20 ms per SYNC cycle
 
 
 class MockStepperNode:
@@ -49,21 +49,21 @@ class MockStepperNode:
     def __init__(self, name: str, steps_per_unit: float, initial_pos: int = 1000):
         self.name = name
         self.steps_per_unit = steps_per_unit
-        self.actual_pos: int = initial_pos    # Start mid-range (not at endstop)
+        self.actual_pos: int = initial_pos  # Start mid-range (not at endstop)
         self.target_pos: int = initial_pos
-        self.vmax: int = 500                  # pps
+        self.vmax: int = 500  # pps
         self.ramp_mode: int = RAMP_POSITION
         self.ctrl_word: int = 0
         self.homed: bool = False
         self.fault: bool = False
-        self.pot_angle_raw: int = 0           # A axis only
+        self.pot_angle_raw: int = 0  # A axis only
 
     def apply_rpdo(self, data: bytes) -> None:
         """Parse an 8-byte stepper RPDO and update command state."""
         if len(data) < 8:
             return
-        target = struct.unpack_from('<i', data, 0)[0]
-        vmax = struct.unpack_from('<H', data, 4)[0]
+        target = struct.unpack_from("<i", data, 0)[0]
+        vmax = struct.unpack_from("<H", data, 4)[0]
         ctrl = data[6]
         ramp_mode = data[7]
 
@@ -86,7 +86,7 @@ class MockStepperNode:
 
     def _start_homing(self) -> None:
         """Simulate homing: clear homed flag, ramp to zero, re-set when there."""
-        self.homed = False   # must travel to endstop before being considered homed
+        self.homed = False  # must travel to endstop before being considered homed
         self.target_pos = 0
 
     def tick(self, dt: float) -> None:
@@ -112,7 +112,7 @@ class MockStepperNode:
             self.homed = True
 
         # Update pot angle for A axis (pot_angle_raw in 0.1° units)
-        if self.name == 'a_axis':
+        if self.name == "a_axis":
             self.pot_angle_raw = int(self.actual_pos / self.steps_per_unit * 10)
 
     def build_tpdo(self, is_a_axis: bool = False) -> bytes:
@@ -130,17 +130,17 @@ class MockStepperNode:
         if self.fault:
             status |= SW_FAULT
 
-        data = struct.pack('<i', self.actual_pos)   # INT32 actual pos
-        data += bytes([status, 0])                   # status word, ramp status
+        data = struct.pack("<i", self.actual_pos)  # INT32 actual pos
+        data += bytes([status, 0])  # status word, ramp status
 
         if is_a_axis:
             # Bytes 6-7 are pot angle (INT16)
-            data += struct.pack('<h', self.pot_angle_raw)
+            data += struct.pack("<h", self.pot_angle_raw)
         else:
             # Bytes 6-7 are ToF distance.
             # Simulate a plausible ToF based on position (not physically accurate)
             tof = 500
-            data += struct.pack('<H', tof)
+            data += struct.pack("<H", tof)
 
         return data
 
@@ -152,56 +152,58 @@ class MockServoNode:
         self.name = name
         self.servo1_us: int = 1500
         self.servo2_us: int = 1500
-        self.tof_mm: int = 100    # Pincher ToF — simulates open gripper distance
+        self.tof_mm: int = 100  # Pincher ToF — simulates open gripper distance
 
     def apply_rpdo(self, data: bytes) -> None:
         if len(data) < 5:
             return
-        self.servo1_us = struct.unpack_from('<H', data, 0)[0]
-        self.servo2_us = struct.unpack_from('<H', data, 2)[0]
+        self.servo1_us = struct.unpack_from("<H", data, 0)[0]
+        self.servo2_us = struct.unpack_from("<H", data, 2)[0]
 
         # Pincher ToF is computed in _sync_tick from Z height (see below).
 
     def build_tpdo(self) -> bytes:
-        data = struct.pack('<H', self.servo1_us)
-        data += struct.pack('<H', self.servo2_us)
-        data += struct.pack('<H', self.tof_mm if self.name == 'pincher' else 0)
-        data += bytes([SW_HOMED | SW_IN_POSITION])   # servos are always "in position"
+        data = struct.pack("<H", self.servo1_us)
+        data += struct.pack("<H", self.servo2_us)
+        data += struct.pack("<H", self.tof_mm if self.name == "pincher" else 0)
+        data += bytes([SW_HOMED | SW_IN_POSITION])  # servos are always "in position"
         return data
 
 
 class MockCANopenMaster(Node):
-
     def __init__(self):
-        super().__init__('mock_canopen_master')
+        super().__init__("mock_canopen_master")
 
-        self.declare_parameter('config_path', '')
-        config_path = self.get_parameter('config_path').get_parameter_value().string_value
+        self.declare_parameter("config_path", "")
+        config_path = self.get_parameter("config_path").get_parameter_value().string_value
 
         if config_path:
             with open(config_path) as f:
                 cfg = yaml.safe_load(f)
-            geo = cfg.get('geometry', {})
+            geo = cfg.get("geometry", {})
         else:
             geo = {
-                'x_steps_per_mm': 80.0,
-                'z_steps_per_mm': 400.0,
-                'a_steps_per_deg': 142.2,
+                "x_steps_per_mm": 80.0,
+                "z_steps_per_mm": 400.0,
+                "a_steps_per_deg": 142.2,
             }
 
         # ── Simulated nodes ───────────────────────────────────────────────────
         # Start X and Z mid-range, A at ~180° (park position)
         self._steppers: dict[str, MockStepperNode] = {
-            'x_axis': MockStepperNode('x_axis', geo['x_steps_per_mm'],
-                                      initial_pos=int(500 * geo['x_steps_per_mm'])),
-            'z_axis': MockStepperNode('z_axis', geo['z_steps_per_mm'],
-                                      initial_pos=int(80 * geo['z_steps_per_mm'])),
-            'a_axis': MockStepperNode('a_axis', geo['a_steps_per_deg'],
-                                      initial_pos=int(180 * geo['a_steps_per_deg'])),
+            "x_axis": MockStepperNode(
+                "x_axis", geo["x_steps_per_mm"], initial_pos=int(500 * geo["x_steps_per_mm"])
+            ),
+            "z_axis": MockStepperNode(
+                "z_axis", geo["z_steps_per_mm"], initial_pos=int(80 * geo["z_steps_per_mm"])
+            ),
+            "a_axis": MockStepperNode(
+                "a_axis", geo["a_steps_per_deg"], initial_pos=int(180 * geo["a_steps_per_deg"])
+            ),
         }
         self._servos: dict[str, MockServoNode] = {
-            'pincher': MockServoNode('pincher'),
-            'player': MockServoNode('player'),
+            "pincher": MockServoNode("pincher"),
+            "player": MockServoNode("player"),
         }
 
         # ── Publishers ────────────────────────────────────────────────────────
@@ -210,31 +212,29 @@ class MockCANopenMaster(Node):
         all_names = list(self._steppers.keys()) + list(self._servos.keys())
         for name in all_names:
             self._tpdo_pubs[name] = self.create_publisher(
-                UInt8MultiArray, f'/canopen/{name}/tpdo1', 10
+                UInt8MultiArray, f"/canopen/{name}/tpdo1", 10
             )
-            self._nmt_pubs[name] = self.create_publisher(
-                String, f'/canopen/{name}/nmt_state', 10
-            )
+            self._nmt_pubs[name] = self.create_publisher(String, f"/canopen/{name}/nmt_state", 10)
 
         # ── Subscribers ───────────────────────────────────────────────────────
         for name in self._steppers:
             self.create_subscription(
                 UInt8MultiArray,
-                f'/canopen/{name}/rpdo1',
+                f"/canopen/{name}/rpdo1",
                 lambda msg, n=name: self._on_stepper_rpdo(n, msg),
                 10,
             )
         for name in self._servos:
             self.create_subscription(
                 UInt8MultiArray,
-                f'/canopen/{name}/rpdo1',
+                f"/canopen/{name}/rpdo1",
                 lambda msg, n=name: self._on_servo_rpdo(n, msg),
                 10,
             )
 
         # ── 50 Hz SYNC timer ──────────────────────────────────────────────────
         self.create_timer(SYNC_DT, self._sync_tick)
-        self.get_logger().info('mock_canopen_master running (50 Hz simulation)')
+        self.get_logger().info("mock_canopen_master running (50 Hz simulation)")
 
     def _on_stepper_rpdo(self, name: str, msg: UInt8MultiArray) -> None:
         self._steppers[name].apply_rpdo(bytes(msg.data))
@@ -246,12 +246,12 @@ class MockCANopenMaster(Node):
         """Simulate one 20 ms SYNC cycle: advance physics, publish TPDOs."""
 
         # Advance steppers
-        for name, node in self._steppers.items():
+        for _, node in self._steppers.items():
             node.tick(SYNC_DT)
 
         # Publish stepper TPDOs
         for name, node in self._steppers.items():
-            is_a = (name == 'a_axis')
+            is_a = name == "a_axis"
             data = node.build_tpdo(is_a_axis=is_a)
             msg = UInt8MultiArray()
             msg.data = list(data)
@@ -265,9 +265,9 @@ class MockCANopenMaster(Node):
         #   Z ≥ 70 mm  — clearance zone:      tof = Z * 1.67  (120 mm → 200 mm)
         # This lets FlipClearanceCheck (≥178 mm) pass at safe-park height (120 mm)
         # while still giving realistic grip feedback at platter height (45 mm).
-        z_axis = self._steppers['z_axis']
+        z_axis = self._steppers["z_axis"]
         z_mm = z_axis.actual_pos / z_axis.steps_per_unit
-        pincher = self._servos['pincher']
+        pincher = self._servos["pincher"]
         grip_open = pincher.servo1_us >= (2000 - 100)
         if z_mm < 70.0:
             pincher.tof_mm = 80 if grip_open else 10
@@ -283,7 +283,7 @@ class MockCANopenMaster(Node):
 
         # NMT state — all nodes operational
         nmt_msg = String()
-        nmt_msg.data = 'operational'
+        nmt_msg.data = "operational"
         for pub in self._nmt_pubs.values():
             pub.publish(nmt_msg)
 
@@ -300,5 +300,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

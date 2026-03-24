@@ -43,6 +43,7 @@ Tree topology (see docs/BEHAVIOR_TREE.md for full specification):
 import py_trees
 from rclpy.node import Node
 
+from . import blackboard_keys as K
 from .actions import (
     ClearForceRehomeAction,
     DecideAction,
@@ -51,9 +52,12 @@ from .actions import (
     GripAction,
     HomeAllAction,
     LoopDecorator,
+    MarkInitialLoadedAction,
     MoveToPositionAction,
     PressPlayAction,
     PublishLEDAction,
+    ResetProgressAction,
+    SetPlayerStateAction,
     SetSpeedAction,
 )
 from .conditions import (
@@ -61,12 +65,13 @@ from .conditions import (
     IsAllHomed,
     IsFlipAction,
     IsHaltRequested,
+    IsInitialLoaded,
     IsSwapAction,
     SafetyCheck,
     WaitForRecordFinished,
+    WaitForStartCommand,
 )
 from .recovery import build_recovery_subtree
-from . import blackboard_keys as K
 
 
 def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
@@ -76,20 +81,19 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
     """
     py_trees.blackboard.Blackboard.enable_activity_stream(100)
 
-    pos     = config["positions"]
+    pos = config["positions"]
     turntable = pos["turntable"]
-    flip_st   = pos["flip_staging"]
+    flip_st = pos["flip_staging"]
     safe_park = pos["safe_park"]
-    progress_threshold = config.get("turntable_monitor", {}).get(
-        "progress_threshold", 0.92
-    )
+    progress_threshold = config.get("turntable_monitor", {}).get("progress_threshold", 0.92)
     clearance_min_mm = config.get("flip", {}).get("clearance_min_mm", 178.0)
 
     # ── Reusable position shortcuts ───────────────────────────────────────────
 
     def _move_to_player_approach(name: str = "MoveToPlayerApproach") -> MoveToPositionAction:
         return MoveToPositionAction(
-            name=name, node=node,
+            name=name,
+            node=node,
             x_mm=turntable["x_mm"],
             z_mm=turntable["z_approach_mm"],
             a_deg=turntable["a_deg"],
@@ -97,24 +101,30 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
 
     def _z_down_to_platter(name: str = "ZDownToPlatter") -> MoveToPositionAction:
         return MoveToPositionAction(
-            name=name, node=node,
+            name=name,
+            node=node,
             z_mm=turntable["z_platter_mm"],
-            skip_x=True, skip_a=True,
+            skip_x=True,
+            skip_a=True,
         )
 
     def _z_up_to_clear(name: str = "ZUpToClear") -> MoveToPositionAction:
         return MoveToPositionAction(
-            name=name, node=node,
+            name=name,
+            node=node,
             z_mm=turntable["z_approach_mm"],
-            skip_x=True, skip_a=True,
+            skip_x=True,
+            skip_a=True,
         )
 
     def _z_up_to_safe(name: str = "ZUpToSafe") -> MoveToPositionAction:
         """Raise Z to full safe clearance (safe_park height)."""
         return MoveToPositionAction(
-            name=name, node=node,
+            name=name,
+            node=node,
             z_mm=safe_park["z_mm"],
-            skip_x=True, skip_a=True,
+            skip_x=True,
+            skip_a=True,
         )
 
     # ── Transit helpers (record trailing safety) ──────────────────────────────
@@ -123,43 +133,63 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
     # `trailing_split` fraction of the X move, then rotates to the destination
     # angle in the remaining travel so the record arrives correctly oriented.
 
-    tran_cfg       = config.get("positions", {}).get("transit", {})
+    tran_cfg = config.get("positions", {}).get("transit", {})
     trailing_split = tran_cfg.get("trailing_split", 0.70)
-    stack_x        = pos["queue_stack"]["x_mm"]
-    tt_x           = turntable["x_mm"]
-    travel         = tt_x - stack_x
+    stack_x = pos["queue_stack"]["x_mm"]
+    tt_x = turntable["x_mm"]
+    travel = tt_x - stack_x
 
     def _transit_to_turntable(name: str) -> py_trees.composites.Sequence:
         """Stack→Turntable: A holds current angle for first 50%, rotates to 90° in last 50%."""
-        waypoint_x   = tt_x - (1.0 - trailing_split) * travel
+        waypoint_x = tt_x - (1.0 - trailing_split) * travel
         arrive_a_deg = tran_cfg.get("to_turntable_arrive_deg", turntable["a_deg"])
-        return py_trees.composites.Sequence(name=name, memory=True, children=[
-            MoveToPositionAction(f"{name}_Trail", node=node,
-                x_mm=waypoint_x, z_mm=turntable["z_approach_mm"],
-                skip_a=True,
-            ),
-            MoveToPositionAction(f"{name}_Arrive", node=node,
-                x_mm=tt_x, z_mm=turntable["z_approach_mm"],
-                a_deg=arrive_a_deg,
-                skip_z=True,
-            ),
-        ])
+        return py_trees.composites.Sequence(
+            name=name,
+            memory=True,
+            children=[
+                MoveToPositionAction(
+                    f"{name}_Trail",
+                    node=node,
+                    x_mm=waypoint_x,
+                    z_mm=turntable["z_approach_mm"],
+                    skip_a=True,
+                ),
+                MoveToPositionAction(
+                    f"{name}_Arrive",
+                    node=node,
+                    x_mm=tt_x,
+                    z_mm=turntable["z_approach_mm"],
+                    a_deg=arrive_a_deg,
+                    skip_z=True,
+                ),
+            ],
+        )
 
     def _transit_to_stack(name: str) -> py_trees.composites.Sequence:
         """Turntable→Stack: A holds current angle for first 50%, rotates to 270° in last 50%."""
-        waypoint_x   = stack_x + (1.0 - trailing_split) * travel
+        waypoint_x = stack_x + (1.0 - trailing_split) * travel
         arrive_a_deg = tran_cfg.get("to_stack_arrive_deg", 270.0)
-        return py_trees.composites.Sequence(name=name, memory=True, children=[
-            MoveToPositionAction(f"{name}_Trail", node=node,
-                x_mm=waypoint_x, z_mm=safe_park["z_mm"],
-                skip_a=True,
-            ),
-            MoveToPositionAction(f"{name}_Arrive", node=node,
-                x_mm=stack_x, z_mm=safe_park["z_mm"],
-                a_deg=arrive_a_deg,
-                skip_z=True,
-            ),
-        ])
+        return py_trees.composites.Sequence(
+            name=name,
+            memory=True,
+            children=[
+                MoveToPositionAction(
+                    f"{name}_Trail",
+                    node=node,
+                    x_mm=waypoint_x,
+                    z_mm=safe_park["z_mm"],
+                    skip_a=True,
+                ),
+                MoveToPositionAction(
+                    f"{name}_Arrive",
+                    node=node,
+                    x_mm=stack_x,
+                    z_mm=safe_park["z_mm"],
+                    a_deg=arrive_a_deg,
+                    skip_z=True,
+                ),
+            ],
+        )
 
     # ── Homing subtree ────────────────────────────────────────────────────────
 
@@ -167,10 +197,10 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         name="DoHoming",
         memory=True,
         children=[
-            PublishLEDAction("HOMING", node),
+            PublishLEDAction("HOMING", node._led_pub),
             HomeAllAction(node),
-            ClearForceRehomeAction(),        # clears force_rehome only after success
-            PublishLEDAction("OPERATIONAL", node),
+            ClearForceRehomeAction(),  # clears force_rehome only after success
+            PublishLEDAction("OPERATIONAL", node._led_pub),
         ],
     )
 
@@ -180,6 +210,67 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         children=[
             IsAllHomed(),
             do_homing,
+        ],
+    )
+
+    # ── Initial load subtree ──────────────────────────────────────────────────
+    # Runs exactly once after homing to pick up slot 0 and place it on the
+    # player so the main operational loop always starts with a record playing.
+    # The IsInitialLoaded gate prevents re-entry during normal operation when
+    # player_has_record is transiently False while the arm is in transit.
+
+    initial_load = py_trees.composites.Sequence(
+        name="InitialLoad",
+        memory=True,
+        children=[
+            # Wait for operator to press "Start Playing" before touching any disc
+            WaitForStartCommand(),
+            # Move directly to stack at safe height with correct A angle
+            MoveToPositionAction(
+                "InitialLoad_Approach",
+                node=node,
+                x_mm=stack_x,
+                z_mm=safe_park["z_mm"],
+                a_deg=pos["queue_stack"]["a_deg"],
+            ),
+            # Lower to slot 0 (current_record_index starts at 0)
+            DynamicMoveToSlotAction(
+                name="InitialLoad_ZToSlot",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+            ),
+            # Pick up (with retry)
+            py_trees.decorators.Retry(
+                child=GripAction(node, close=True, name="InitialLoad_GripClose"),
+                num_failures=config.get("grip", {}).get("retry_max", 3),
+                name="InitialLoad_GripRetry",
+            ),
+            # Raise to safe clearance
+            _z_up_to_safe("InitialLoad_ZUp"),
+            # Transit to turntable
+            _transit_to_turntable("InitialLoad_TransitToPlayer"),
+            # Place on player
+            _z_down_to_platter("InitialLoad_ZDown"),
+            GripAction(node, close=False, name="InitialLoad_GripOpen"),
+            SetPlayerStateAction(has_record=True, name="InitialLoad_MarkPlayerFull"),
+            _z_up_to_clear("InitialLoad_ZUpClear"),
+            # Start playing
+            PressPlayAction(node, press=True, name="InitialLoad_PressPlay"),
+            SetSpeedAction(node, rpm=33.0, name="InitialLoad_SetSpeed"),
+            ResetProgressAction("InitialLoad_ResetProgress"),
+            PublishLEDAction("PLAYING", node._led_pub),
+            # Mark done so this subtree never runs again this session
+            MarkInitialLoadedAction(),
+        ],
+    )
+
+    maybe_initial_load = py_trees.composites.Selector(
+        name="MaybeInitialLoad",
+        memory=False,
+        children=[
+            IsInitialLoaded(),  # gate: SUCCESS once done, FAILURE before
+            initial_load,
         ],
     )
 
@@ -227,21 +318,27 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
             IsFlipAction(),
             # Step 1: swing A away from player
             MoveToPositionAction(
-                name="FlipStage_SwingA", node=node,
+                name="FlipStage_SwingA",
+                node=node,
                 a_deg=flip_st["a_deg"],
-                skip_x=True, skip_z=True,
+                skip_x=True,
+                skip_z=True,
             ),
             # Step 2: back X away from player
             MoveToPositionAction(
-                name="FlipStage_BackX", node=node,
+                name="FlipStage_BackX",
+                node=node,
                 x_mm=flip_st["x_mm"],
-                skip_z=True, skip_a=True,
+                skip_z=True,
+                skip_a=True,
             ),
             # Step 3: raise Z for clearance
             MoveToPositionAction(
-                name="FlipStage_RaiseZ", node=node,
+                name="FlipStage_RaiseZ",
+                node=node,
                 z_mm=flip_st["z_mm"],
-                skip_x=True, skip_a=True,
+                skip_x=True,
+                skip_a=True,
             ),
             # Step 4: verify clearance below arm
             ensure_flip_clearance,
@@ -260,42 +357,37 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             IsSwapAction(),
-
             # Ensure Z clearance before moving X toward stack
             _z_up_to_safe("Swap_ZClear"),
-
             # Transit to queue stack — record trails toward turntable,
             # A rotates to arrival angle (270°) in the last 30% of X travel.
             _transit_to_stack("Swap_TransitToStack"),
-
             # Lower Z to old record's slot (PREV_RECORD_IDX)
             DynamicMoveToSlotAction(
-                name="Swap_ZToOldSlot", node=node, config=config,
+                name="Swap_ZToOldSlot",
+                node=node,
+                config=config,
                 idx_key=K.PREV_RECORD_IDX,
             ),
-
             # Deposit old record
             GripAction(node, close=False, name="Swap_GripOpen"),
-
             # Raise Z to clearance between slots
             _z_up_to_safe("Swap_ZClearAfterDeposit"),
-
             # Lower Z to new record's slot (CURRENT_RECORD_IDX, already incremented)
             DynamicMoveToSlotAction(
-                name="Swap_ZToNewSlot", node=node, config=config,
+                name="Swap_ZToNewSlot",
+                node=node,
+                config=config,
                 idx_key=K.CURRENT_RECORD_IDX,
             ),
-
             # Pick up new record (with retry)
             py_trees.decorators.Retry(
                 child=GripAction(node, close=True, name="Swap_GripClose"),
                 num_failures=config.get("grip", {}).get("retry_max", 3),
                 name="Swap_GripCloseRetry",
             ),
-
             # Raise Z to full clearance before moving back to turntable
             _z_up_to_safe("Swap_ZClearWithRecord"),
-
             # Transit back to turntable — record trails toward stack,
             # A rotates to turntable angle (90°) in the last 50% of X travel.
             _transit_to_turntable("Swap_ReturnToPlayer"),
@@ -320,6 +412,7 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         children=[
             _z_down_to_platter("PlaceRecord_ZDown"),
             GripAction(node, close=False, name="PlaceRecord_GripOpen"),
+            SetPlayerStateAction(has_record=True, name="MarkPlayerFull"),
             _z_up_to_clear("PlaceRecord_ZUp"),
         ],
     )
@@ -334,12 +427,14 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
             PressPlayAction(node, press=False, name="PressStop"),
             _move_to_player_approach("Lift_Approach"),
             lift_record,
+            SetPlayerStateAction(has_record=False, name="MarkPlayerEmpty"),
             DecideAction(),
             flip_or_swap,
             place_record,
             PressPlayAction(node, press=True, name="PressPlay"),
             SetSpeedAction(node, rpm=33.0),
-            PublishLEDAction("PLAYING", node),
+            ResetProgressAction(),
+            PublishLEDAction("PLAYING", node._led_pub),
         ],
     )
 
@@ -361,6 +456,7 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         memory=False,
         children=[
             homing_subtree,
+            maybe_initial_load,
             operational_or_halt,
         ],
     )

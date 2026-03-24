@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      # Lint and auto-fix (import sort, unused imports, etc.)
+      - id: ruff
+        args: [--fix]
+      # Format (replaces black)
+      - id: ruff-format

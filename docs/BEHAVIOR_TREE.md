@@ -86,20 +86,26 @@ Namespace: `/rdj`.  Written by `StateMachineNode` subscription callbacks; read b
 
 | Key | Type | Written by | Description |
 |---|---|---|---|
-| `safety_ok` | bool | `_on_status`, `_on_scale` | velocity_scale > 0 AND no fault |
-| `estop_active` | bool | `_on_hw_estop`, `_on_sw_estop`, `_on_user_cmd` | HW or SW e-stop asserted |
+| `safety_ok` | bool | `_on_status`, `_on_safety_status` | velocity_scale > 0 AND no fault |
+| `estop_active` | bool | `_on_safety_status`, `_on_sw_estop` | HW or SW e-stop asserted |
 | `all_homed` | bool | `_on_status` | All axes report homed bit |
 | `motion_fault` | bool | `_on_status` | Fault bit from motion coordinator |
 | `motion_fault_msg` | str | `_on_status` | Human-readable fault description |
 | `pincher_tof_mm` | float | `_on_status` | Pincher ToF reading in mm |
 | `playback_progress` | float | `_on_progress` | Tonearm position 0.0–1.0 |
 | `play_mode` | str | `_on_play_mode` | SEQUENTIAL / SINGLE_REPEAT / SIDE_REPEAT |
-| `current_record_index` | int | `DecideAction`, `_on_select_record` | Active record slot (0-based) |
+| `current_record_index` | int | `DecideAction` | Active record slot (0-based) |
 | `prev_record_index` | int | `DecideAction` | Previous record slot (used by Swap) |
 | `current_side` | str | `DecideAction` | "A" or "B" |
 | `queue_size` | int | init | Number of slots in queue_stack |
 | `next_action` | str | `DecideAction` | "flip", "swap", or "halt" |
 | `force_rehome` | bool | `_on_user_cmd` | Set by "home" user command |
+| `override_slot` | int | `_on_select_record` | -1 = none; ≥0 = next slot to load (set by queue selector) |
+| `force_flip` | bool | `_on_user_cmd` | Set by "flip" user command; fires immediately in DecideAction |
+| `player_has_record` | bool | `SetPlayerStateAction` | True while a disc is on the turntable |
+| `slot_sides` | list[str] | `DecideAction` | Per-slot last-known side ("A"/"B"); updated on deposit |
+| `start_requested` | bool | `_on_user_cmd` | Set by "start" command; cleared after InitialLoad begins |
+| `initial_loaded` | bool | `MarkInitialLoadedAction` | True after first disc has been placed on player |
 
 ## Key Behaviours
 
@@ -115,16 +121,31 @@ via ROS parameter `progress_threshold`).  Returns SUCCESS when the threshold is 
 
 ### DecideAction
 
-Pure logic node — reads blackboard, writes `next_action`, `current_side`, and record indices:
+Pure logic node — reads blackboard, writes `next_action`, `current_side`, `current_record_index`, `prev_record_index`, and `slot_sides`. Priority order (highest first):
 
-| `current_side` | `play_mode` | Action | Side after |
+| Priority | Condition | Action | Effect |
 |---|---|---|---|
-| A | any | flip | B |
-| B | SIDE_REPEAT or SINGLE_REPEAT | flip | A |
-| B | SEQUENTIAL, records remain | swap | A |
-| B | SEQUENTIAL, last record | halt | — |
+| 1 | `force_flip = True` | flip | Toggle A↔B; clear `force_flip` |
+| 2 | `override_slot ≥ 0` | swap | Saves current side into `slot_sides`; loads target slot at its saved side; clears `override_slot` |
+| 3 | `current_side = "A"` | flip | Sets side to B |
+| 4 | `current_side = "B"`, SIDE_REPEAT or SINGLE_REPEAT | flip | Sets side to A |
+| 5 | `current_side = "B"`, SEQUENTIAL | swap | Saves side B into `slot_sides`; wraps index `(current+1) % queue_size` (no halt at end) |
 
-For swap: saves current index to `prev_record_index`, increments `current_record_index`.
+For swap: saves current index to `prev_record_index` before updating `current_record_index`.
+
+### WaitForStartCommand
+
+Returns RUNNING until `start_requested = True`. Placed as the first child of the `InitialLoad` sequence so the robot idles after homing until the operator presses "Start Playing" in the web UI. The `IsInitialLoaded` gate prevents re-entry after the first disc is loaded.
+
+### SetPlayerStateAction
+
+Pure blackboard write. Two instances in the tree:
+- After `LiftRecord_ZUp` → writes `player_has_record = False`
+- After `PlaceRecord_GripOpen` → writes `player_has_record = True`
+
+### ResetProgressAction
+
+Writes `playback_progress = 0.0`. Placed after `SetSpeedAction` in both `InitialLoad` and `OneCycle` to prevent stale progress values from triggering `WaitForRecordFinished` immediately at the start of the next cycle.
 
 ### IsAllHomed / IsFlipAction / IsSwapAction / IsHaltRequested
 

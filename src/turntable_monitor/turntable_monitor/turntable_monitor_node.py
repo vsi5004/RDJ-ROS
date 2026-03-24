@@ -19,36 +19,37 @@ TODO (when connecting real hardware):
 """
 
 import math
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
 
 
 class TurntableMonitorNode(Node):
-
     def __init__(self):
-        super().__init__('turntable_monitor')
+        super().__init__("turntable_monitor")
 
-        self.declare_parameter('mock_mode', False)
-        self._mock = self.get_parameter('mock_mode').get_parameter_value().bool_value
+        self.declare_parameter("mock_mode", False)
+        self._mock = self.get_parameter("mock_mode").get_parameter_value().bool_value
 
         self._progress: float = 0.0
-        self._pub = self.create_publisher(Float32, '/turntable/progress', 10)
+        self._pub = self.create_publisher(Float32, "/turntable/progress", 10)
 
         if self._mock:
             # Simulate a record playing: progress increments at ~1% per second
             # A full side takes ~25 minutes; we simulate faster (1% per tick at 1Hz)
             self.create_timer(1.0, self._mock_tick)
-            self.get_logger().info('turntable_monitor: MOCK MODE — simulating progress')
+            self.get_logger().info("turntable_monitor: MOCK MODE — simulating progress")
         else:
             try:
-                from sensor_msgs.msg import Image
                 from cv_bridge import CvBridge
+                from sensor_msgs.msg import Image
+
                 self._bridge = CvBridge()
-                self.create_subscription(Image, '/camera/image_raw', self._on_image, 5)
-                self.get_logger().info('turntable_monitor: waiting for /camera/image_raw')
+                self.create_subscription(Image, "/camera/image_raw", self._on_image, 5)
+                self.get_logger().info("turntable_monitor: waiting for /camera/image_raw")
             except ImportError:
-                self.get_logger().error('cv_bridge not available — falling back to mock mode')
+                self.get_logger().error("cv_bridge not available — falling back to mock mode")
                 self._mock = True
                 self.create_timer(1.0, self._mock_tick)
 
@@ -61,15 +62,13 @@ class TurntableMonitorNode(Node):
 
     def _on_image(self, msg) -> None:
         try:
-            import cv2
-            import numpy as np
-            frame = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
+            frame = self._bridge.imgmsg_to_cv2(msg, "bgr8")
             progress = self._process_frame(frame)
             out = Float32()
             out.data = float(progress)
             self._pub.publish(out)
         except Exception as exc:
-            self.get_logger().debug(f'turntable_monitor frame error: {exc}')
+            self.get_logger().debug(f"turntable_monitor frame error: {exc}")
 
     def _process_frame(self, frame) -> float:
         import cv2
@@ -87,22 +86,22 @@ class TurntableMonitorNode(Node):
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
-            return self._progress   # return last known value
+            return self._progress  # return last known value
 
         largest = max(contours, key=cv2.contourArea)
         M = cv2.moments(largest)
-        if M['m00'] < 10:
+        if M["m00"] < 10:
             return self._progress
 
-        tx = int(M['m10'] / M['m00'])
-        ty = int(M['m01'] / M['m00'])
+        tx = int(M["m10"] / M["m00"])
+        ty = int(M["m01"] / M["m00"])
 
         # Radial distance from platter center
         radius = math.sqrt((tx - cx) ** 2 + (ty - cy) ** 2)
 
         # Calibration constants (pixels) — these should come from YAML eventually
-        outer_r = min(w, h) * 0.45   # outer groove
-        inner_r = min(w, h) * 0.12   # run-out groove
+        outer_r = min(w, h) * 0.45  # outer groove
+        inner_r = min(w, h) * 0.12  # run-out groove
 
         progress = 1.0 - max(0.0, min(1.0, (radius - inner_r) / (outer_r - inner_r)))
         self._progress = progress
@@ -121,5 +120,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

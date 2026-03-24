@@ -19,13 +19,13 @@ roslibjs (`roslib.min.js`) is bundled in the Docker image at build time — no C
 
 ### UI Panels
 
-**Status** — Live telemetry from `/motion/status` and `/safety/estop`:
+**Status** — Live telemetry from `/motion/status` and `/safety/status`:
 - Axis positions (X mm, Z mm, A °)
 - Per-axis homed flags (X✓ Z✓ A✓)
 - Safety velocity scale with colour coding (green/amber/red)
 - ToF sensor readings (X axis, Z axis, pincher)
 - Moving indicators (per axis)
-- E-stop indicator (hardware estop from LiDAR)
+- E-stop indicator (hardware estop from LiDAR, via `SafetyStatus.estop`)
 - Fault banner (red, shows fault_msg when fault=true)
 
 **Playback** — `/turntable/progress` as a progress bar (0–100%)
@@ -49,8 +49,12 @@ roslibjs (`roslib.min.js`) is bundled in the Docker image at build time — no C
 - Clear E-Stop button — publishes `/user/estop: false`; only clears software estop (hardware estop from LiDAR must clear on its own)
 - `Escape` keyboard shortcut triggers estop
 
-**Controls** — High-level commands via `/user/command`:
-- Home All, Play, Flip, Skip
+**Controls** — High-level commands and queue management:
+- **Home All** — publishes `"home"` to `/user/command`
+- **Start Playing** — publishes `"start"` to `/user/command`; shown only before the first disc is loaded; triggers the `InitialLoad` sequence
+- **Flip Now** — publishes `"flip"` to `/user/command`; disabled when no record is on the player
+- **Play Mode** — publishes to `/user/play_mode`: `SEQUENTIAL`, `SIDE_REPEAT`, or `SINGLE_REPEAT`
+- **Queue Slot selector** — publishes slot index to `/user/select_record` (UInt8); highlights current/pending slots; shows ●/○ occupancy
 
 ### Topics
 
@@ -59,13 +63,18 @@ roslibjs (`roslib.min.js`) is bundled in the Docker image at build time — no C
 |---|---|---|
 | `/motion/status` | `vinyl_robot_msgs/MotionStatus` | All axis + sensor display |
 | `/turntable/progress` | `std_msgs/Float32` | Progress bar |
-| `/safety/estop` | `std_msgs/Bool` | Hardware estop indicator |
+| `/safety/status` | `vinyl_robot_msgs/SafetyStatus` | Hardware estop indicator + velocity scale |
+| `/state_machine/status` | `vinyl_robot_msgs/StateMachineStatus` | Slot indicator, side, player occupancy |
+| `/state_machine/tip` | `std_msgs/String` | Active behaviour display |
+| `/led/pixels` | `std_msgs/UInt8MultiArray` | LED strip/ring visualizer |
 
 **Published by browser:**
 | Topic | Type | Purpose |
 |---|---|---|
-| `/user/command` | `std_msgs/String` | High-level commands (home, play, flip, skip) |
+| `/user/command` | `std_msgs/String` | High-level commands: `"home"`, `"start"`, `"flip"` |
 | `/user/estop` | `std_msgs/Bool` | Software e-stop activate/clear |
+| `/user/play_mode` | `std_msgs/String` | `SEQUENTIAL`, `SIDE_REPEAT`, `SINGLE_REPEAT` |
+| `/user/select_record` | `std_msgs/UInt8` | Queue override — slot index to load next |
 | `/motion/jog` | `std_msgs/String` | Axis jog increments |
 | `/motion/servo_raw` | `std_msgs/String` | Raw servo pulse widths for calibration |
 

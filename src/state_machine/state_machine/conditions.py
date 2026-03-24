@@ -27,12 +27,12 @@ class SafetyCheck(py_trees.behaviour.Behaviour):
     def __init__(self, name: str = "SafetyCheck"):
         super().__init__(name)
         self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
-        self._bb.register_key(K.SAFETY_OK,    access=py_trees.common.Access.READ)
+        self._bb.register_key(K.SAFETY_OK, access=py_trees.common.Access.READ)
         self._bb.register_key(K.ESTOP_ACTIVE, access=py_trees.common.Access.READ)
 
     def update(self) -> py_trees.common.Status:
         try:
-            safety_ok   = self._bb.safety_ok
+            safety_ok = self._bb.safety_ok
             estop_active = self._bb.estop_active
         except KeyError:
             # Blackboard not yet written — give startup a grace tick
@@ -62,12 +62,12 @@ class IsAllHomed(py_trees.behaviour.Behaviour):
     def __init__(self, name: str = "IsAllHomed"):
         super().__init__(name)
         self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
-        self._bb.register_key(K.ALL_HOMED,    access=py_trees.common.Access.READ)
+        self._bb.register_key(K.ALL_HOMED, access=py_trees.common.Access.READ)
         self._bb.register_key(K.FORCE_REHOME, access=py_trees.common.Access.READ)
 
     def update(self) -> py_trees.common.Status:
         try:
-            homed        = self._bb.all_homed
+            homed = self._bb.all_homed
             force_rehome = self._bb.force_rehome
         except KeyError:
             return py_trees.common.Status.FAILURE
@@ -87,19 +87,27 @@ class IsAllHomed(py_trees.behaviour.Behaviour):
 class WaitForRecordFinished(py_trees.behaviour.Behaviour):
     """
     Returns RUNNING while the record is still playing (progress < threshold).
-    Returns SUCCESS when progress reaches the run-out groove.
+    Returns SUCCESS when progress reaches the run-out groove OR when the
+    operator requests an immediate flip (force_flip flag set on blackboard).
     The threshold is read from robot_params.yaml and passed at construction.
     """
 
-    def __init__(self, progress_threshold: float = 0.92,
-                 name: str = "WaitForRecordFinished"):
+    def __init__(self, progress_threshold: float = 0.92, name: str = "WaitForRecordFinished"):
         super().__init__(name)
         self._threshold = progress_threshold
         self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
-        self._bb.register_key(K.PLAYBACK_PROGRESS,
-                              access=py_trees.common.Access.READ)
+        self._bb.register_key(K.PLAYBACK_PROGRESS, access=py_trees.common.Access.READ)
+        self._bb.register_key(K.FORCE_FLIP, access=py_trees.common.Access.READ)
 
     def update(self) -> py_trees.common.Status:
+        # Manual flip request — skip the wait entirely
+        try:
+            if self._bb.force_flip:
+                self.feedback_message = "Manual flip requested — skipping wait"
+                return py_trees.common.Status.SUCCESS
+        except KeyError:
+            pass
+
         try:
             progress = self._bb.playback_progress
         except KeyError:
@@ -127,9 +135,9 @@ class IsFlipAction(py_trees.behaviour.Behaviour):
             action = self._bb.next_action
         except KeyError:
             return py_trees.common.Status.FAILURE
-        return (py_trees.common.Status.SUCCESS
-                if action == "flip"
-                else py_trees.common.Status.FAILURE)
+        return (
+            py_trees.common.Status.SUCCESS if action == "flip" else py_trees.common.Status.FAILURE
+        )
 
 
 class IsSwapAction(py_trees.behaviour.Behaviour):
@@ -145,9 +153,9 @@ class IsSwapAction(py_trees.behaviour.Behaviour):
             action = self._bb.next_action
         except KeyError:
             return py_trees.common.Status.FAILURE
-        return (py_trees.common.Status.SUCCESS
-                if action == "swap"
-                else py_trees.common.Status.FAILURE)
+        return (
+            py_trees.common.Status.SUCCESS if action == "swap" else py_trees.common.Status.FAILURE
+        )
 
 
 class IsHaltRequested(py_trees.behaviour.Behaviour):
@@ -167,9 +175,57 @@ class IsHaltRequested(py_trees.behaviour.Behaviour):
             action = self._bb.next_action
         except KeyError:
             return py_trees.common.Status.FAILURE
-        return (py_trees.common.Status.SUCCESS
-                if action == "halt"
-                else py_trees.common.Status.FAILURE)
+        return (
+            py_trees.common.Status.SUCCESS if action == "halt" else py_trees.common.Status.FAILURE
+        )
+
+
+class IsInitialLoaded(py_trees.behaviour.Behaviour):
+    """
+    Returns SUCCESS once the first record has been placed on the player by the
+    InitialLoad subtree, FAILURE before that.  Used as the gate in
+    MaybeInitialLoad so the initial load sequence never re-triggers during
+    normal operation (when player_has_record is transiently False while the
+    arm is carrying a record between lift and place).
+    """
+
+    def __init__(self, name: str = "IsInitialLoaded"):
+        super().__init__(name)
+        self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
+        self._bb.register_key(K.INITIAL_LOADED, access=py_trees.common.Access.READ)
+
+    def update(self) -> py_trees.common.Status:
+        try:
+            if self._bb.initial_loaded:
+                return py_trees.common.Status.SUCCESS
+        except KeyError:
+            pass
+        return py_trees.common.Status.FAILURE
+
+
+class WaitForStartCommand(py_trees.behaviour.Behaviour):
+    """
+    Holds RUNNING until the operator sends the 'start' command via /user/command.
+    Used as the first step of the InitialLoad sequence so the robot waits for an
+    explicit human trigger rather than auto-loading after homing.
+    Returns SUCCESS once start_requested is True (one-shot; gate resets are
+    handled by the permanent INITIAL_LOADED flag, not this condition).
+    """
+
+    def __init__(self, name: str = "WaitForStartCommand"):
+        super().__init__(name)
+        self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
+        self._bb.register_key(K.START_REQUESTED, access=py_trees.common.Access.READ)
+
+    def update(self) -> py_trees.common.Status:
+        try:
+            if self._bb.start_requested:
+                self.feedback_message = "Start command received — loading first record"
+                return py_trees.common.Status.SUCCESS
+        except KeyError:
+            pass
+        self.feedback_message = "Waiting for operator 'Start Playing' command…"
+        return py_trees.common.Status.RUNNING
 
 
 class FlipClearanceCheck(py_trees.behaviour.Behaviour):
@@ -186,8 +242,7 @@ class FlipClearanceCheck(py_trees.behaviour.Behaviour):
     Returns RUNNING if the value hasn't been published yet.
     """
 
-    def __init__(self, clearance_min_mm: float = 178.0,
-                 name: str = "FlipClearanceCheck"):
+    def __init__(self, clearance_min_mm: float = 178.0, name: str = "FlipClearanceCheck"):
         super().__init__(name)
         self._min = clearance_min_mm
         self._bb = self.attach_blackboard_client(name=name, namespace=_NS)

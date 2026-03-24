@@ -82,8 +82,6 @@ safety:
 grip:
   open_pulse_us: 2000          # Servo pulse width for open gripper
   close_pulse_us: 1000         # Servo pulse width for closed gripper
-  tof_contact_mm: 15           # ToF reading that confirms grip contact (≤ this = gripped)
-  tof_open_mm: 60              # ToF reading that confirms open (≥ this = no record)
   retry_max: 3                 # Max grip attempts before fault
 
 flip:
@@ -103,3 +101,18 @@ turntable_monitor:
   hue_max: 40
   sat_min: 100
   val_min: 100
+
+led_controller:
+  mock_mode: true              # true = log only, no SDO writes (simulation)
+  brightness: 0.8              # global brightness scale (0.0–1.0)
+  anim_hz: 20.0                # animation timer rate
+  strip_leds: 144              # number of LEDs in X-rail DotStar strip
+  ring_leds: 60                # number of LEDs in A-axis DotStar ring (60 LEDs over 360°)
+  x_travel_mm: 600.0           # full X travel range (maps strip_leds across this distance)
+  a_travel_deg: 360.0          # full A rotation range (maps ring_leds across this range)
+  breathe_period_s: 2.0        # OPERATIONAL/IDLE slow breathe cycle period
+  pulse_period_s: 1.0          # PLAYING/FAULT_PARKED pulse cycle period
+  sweep_period_s: 2.0          # HOMING ring sweep cycle period
+  flash_period_s: 0.5          # SAFETY_WARNING/FAULT flash cycle period
+  safety_warning_threshold: 1.0  # velocity_scale below this triggers orange override
+  fade_in_speed: 0.15          # per-frame alpha increment as axis passes each LED (0.0–1.0)

@@ -66,30 +66,31 @@ CW_CLEAR_FAULT = 1 << 3
 
 # ── Ramp modes ────────────────────────────────────────────────────────────────
 RAMP_POSITION = 0
-RAMP_VELOCITY_FWD = 1   # velocity+ (increasing position)
-RAMP_VELOCITY_REV = 2   # velocity- (decreasing position)
+RAMP_VELOCITY_FWD = 1  # velocity+ (increasing position)
+RAMP_VELOCITY_REV = 2  # velocity- (decreasing position)
 
 
 class StepperTPDO:
     """Parsed TPDO1 from a stepper node (X or Z axis)."""
 
-    __slots__ = ('actual_pos', 'status_word', 'ramp_status', 'tof_mm')
+    __slots__ = ("actual_pos", "ramp_status", "status_word", "tof_mm")
 
-    def __init__(self, actual_pos: int = 0, status_word: int = 0,
-                 ramp_status: int = 0, tof_mm: int = 0xFFFF):
-        self.actual_pos = actual_pos       # INT32  microsteps
-        self.status_word = status_word     # UINT8
-        self.ramp_status = ramp_status     # UINT8
-        self.tof_mm = tof_mm               # UINT16
+    def __init__(
+        self, actual_pos: int = 0, status_word: int = 0, ramp_status: int = 0, tof_mm: int = 0xFFFF
+    ):
+        self.actual_pos = actual_pos  # INT32  microsteps
+        self.status_word = status_word  # UINT8
+        self.ramp_status = ramp_status  # UINT8
+        self.tof_mm = tof_mm  # UINT16
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'StepperTPDO':
+    def from_bytes(cls, data: bytes) -> "StepperTPDO":
         if len(data) < 8:
-            raise ValueError(f'StepperTPDO needs 8 bytes, got {len(data)}')
-        actual_pos = struct.unpack_from('<i', data, 0)[0]
+            raise ValueError(f"StepperTPDO needs 8 bytes, got {len(data)}")
+        actual_pos = struct.unpack_from("<i", data, 0)[0]
         status_word = data[4]
         ramp_status = data[5]
-        tof_mm = struct.unpack_from('<H', data, 6)[0]
+        tof_mm = struct.unpack_from("<H", data, 6)[0]
         return cls(actual_pos, status_word, ramp_status, tof_mm)
 
     @property
@@ -112,23 +113,28 @@ class StepperTPDO:
 class AAxisTPDO:
     """Parsed TPDO1 from the A axis node — same as stepper but byte 6-7 is pot angle."""
 
-    __slots__ = ('actual_pos', 'status_word', 'ramp_status', 'pot_angle_raw')
+    __slots__ = ("actual_pos", "pot_angle_raw", "ramp_status", "status_word")
 
-    def __init__(self, actual_pos: int = 0, status_word: int = 0,
-                 ramp_status: int = 0, pot_angle_raw: int = 0):
+    def __init__(
+        self,
+        actual_pos: int = 0,
+        status_word: int = 0,
+        ramp_status: int = 0,
+        pot_angle_raw: int = 0,
+    ):
         self.actual_pos = actual_pos
         self.status_word = status_word
         self.ramp_status = ramp_status
-        self.pot_angle_raw = pot_angle_raw   # INT16, 0.1° units
+        self.pot_angle_raw = pot_angle_raw  # INT16, 0.1° units
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'AAxisTPDO':
+    def from_bytes(cls, data: bytes) -> "AAxisTPDO":
         if len(data) < 8:
-            raise ValueError(f'AAxisTPDO needs 8 bytes, got {len(data)}')
-        actual_pos = struct.unpack_from('<i', data, 0)[0]
+            raise ValueError(f"AAxisTPDO needs 8 bytes, got {len(data)}")
+        actual_pos = struct.unpack_from("<i", data, 0)[0]
         status_word = data[4]
         ramp_status = data[5]
-        pot_angle_raw = struct.unpack_from('<h', data, 6)[0]   # signed INT16
+        pot_angle_raw = struct.unpack_from("<h", data, 6)[0]  # signed INT16
         return cls(actual_pos, status_word, ramp_status, pot_angle_raw)
 
     @property
@@ -156,41 +162,44 @@ class AAxisTPDO:
 class ServoTPDO:
     """Parsed TPDO1 from a servo node (Pincher or Player)."""
 
-    __slots__ = ('servo1_us', 'servo2_us', 'tof_mm', 'status_word')
+    __slots__ = ("servo1_us", "servo2_us", "status_word", "tof_mm")
 
-    def __init__(self, servo1_us: int = 1500, servo2_us: int = 1500,
-                 tof_mm: int = 0xFFFF, status_word: int = 0):
+    def __init__(
+        self,
+        servo1_us: int = 1500,
+        servo2_us: int = 1500,
+        tof_mm: int = 0xFFFF,
+        status_word: int = 0,
+    ):
         self.servo1_us = servo1_us
         self.servo2_us = servo2_us
         self.tof_mm = tof_mm
         self.status_word = status_word
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> 'ServoTPDO':
+    def from_bytes(cls, data: bytes) -> "ServoTPDO":
         if len(data) < 7:
-            raise ValueError(f'ServoTPDO needs 7 bytes, got {len(data)}')
-        servo1_us = struct.unpack_from('<H', data, 0)[0]
-        servo2_us = struct.unpack_from('<H', data, 2)[0]
-        tof_mm = struct.unpack_from('<H', data, 4)[0]
+            raise ValueError(f"ServoTPDO needs 7 bytes, got {len(data)}")
+        servo1_us = struct.unpack_from("<H", data, 0)[0]
+        servo2_us = struct.unpack_from("<H", data, 2)[0]
+        tof_mm = struct.unpack_from("<H", data, 4)[0]
         status_word = data[6]
         return cls(servo1_us, servo2_us, tof_mm, status_word)
 
 
-def build_stepper_rpdo(target_steps: int, vmax: int,
-                       ctrl_word: int, ramp_mode: int) -> bytes:
+def build_stepper_rpdo(target_steps: int, vmax: int, ctrl_word: int, ramp_mode: int) -> bytes:
     """Assemble an 8-byte RPDO1 for a stepper node."""
-    data = struct.pack('<i', target_steps)      # INT32
-    data += struct.pack('<H', min(vmax, 65535))  # UINT16
-    data += bytes([ctrl_word & 0xFF])            # UINT8
-    data += bytes([ramp_mode & 0xFF])            # UINT8
+    data = struct.pack("<i", target_steps)  # INT32
+    data += struct.pack("<H", min(vmax, 65535))  # UINT16
+    data += bytes([ctrl_word & 0xFF])  # UINT8
+    data += bytes([ramp_mode & 0xFF])  # UINT8
     return data
 
 
-def build_servo_rpdo(servo1_us: int, servo2_us: int,
-                     ctrl_word: int = CW_ENABLE) -> bytes:
+def build_servo_rpdo(servo1_us: int, servo2_us: int, ctrl_word: int = CW_ENABLE) -> bytes:
     """Assemble an 8-byte RPDO1 for a servo node."""
-    data = struct.pack('<H', servo1_us)   # UINT16
-    data += struct.pack('<H', servo2_us)  # UINT16
-    data += bytes([ctrl_word & 0xFF])     # UINT8
-    data += b'\x00\x00\x00'              # padding to 8 bytes
+    data = struct.pack("<H", servo1_us)  # UINT16
+    data += struct.pack("<H", servo2_us)  # UINT16
+    data += bytes([ctrl_word & 0xFF])  # UINT8
+    data += b"\x00\x00\x00"  # padding to 8 bytes
     return data

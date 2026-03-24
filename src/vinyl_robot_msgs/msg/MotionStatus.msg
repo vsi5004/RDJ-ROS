@@ -6,6 +6,10 @@ float64 x_mm
 float64 z_mm
 float64 a_deg
 
+# ── Move targets (equals actual position when idle) ───────────────────────────
+float64 x_target_mm
+float64 a_target_deg
+
 # ── Homing state ──────────────────────────────────────────────────────────────
 bool x_homed
 bool z_homed

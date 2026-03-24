@@ -59,6 +59,14 @@
                   min-width: 60px; text-align: right; color: #f90; }
     .config-hint { font-size: 0.72rem; color: #555; margin-top: 0.5rem; line-height: 1.6; }
 
+    /* Controls card — queue and mode buttons */
+    .btn.active-slot  { background:#1a3a1a; border-color:#4f4; color:#4f4; }
+    .btn.pending-slot { background:#3a2a00; border-color:#fa0; color:#fa0; }
+    .btn.active-mode  { background:#1a2a3a; border-color:#4af; color:#4af; }
+    .controls-row     { display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;
+                        margin-bottom:0.75rem; }
+    .controls-label   { font-size:0.75rem; color:#777; min-width:80px; }
+
     /* Progress */
     progress { width: 100%; height: 12px; border-radius: 6px; }
 
@@ -69,6 +77,17 @@
     /* Log */
     #log { font-family: monospace; font-size: 0.75rem; color: #888;
            height: 80px; overflow-y: auto; border-top: 1px solid #333; padding-top: 0.5rem; }
+
+    /* LED Visualizer */
+    .led-section { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+    .led-strip-wrap { flex: 1; min-width: 200px; }
+    .led-ring-wrap { flex: 0 0 140px; text-align: center; }
+    .led-label { font-size: 0.7rem; color: #777; text-transform: uppercase;
+                 margin-bottom: 4px; letter-spacing: 0.05em; }
+    #led-strip { display: block; width: 100%; height: 18px; border-radius: 3px;
+                 background: #111; }
+    #led-ring { display: block; }
+    #led-pattern-label { font-size: 0.75rem; color: #555; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -129,6 +148,10 @@
         <div class="status-label">E-Stop</div>
         <div class="status-value" id="estop-indicator">—</div>
       </div>
+      <div class="status-item" style="min-width:140px">
+        <div class="status-label">Tree Node</div>
+        <div class="status-value" id="sm-tip" style="font-size:0.82rem;color:#fa0">—</div>
+      </div>
     </div>
   </div>
 
@@ -138,6 +161,22 @@
     <div class="status-label">PROGRESS</div>
     <progress id="progress-bar" value="0" max="1"></progress>
     <div id="progress-val" style="font-size:0.85rem;color:#aaa;margin-top:0.25rem">0%</div>
+  </div>
+
+  <!-- LED Visualizer -->
+  <div class="card">
+    <h2>LED Visualizer</h2>
+    <div class="led-section">
+      <div class="led-strip-wrap">
+        <div class="led-label">X Rail Strip (144 LEDs)</div>
+        <svg id="led-strip" viewBox="0 0 144 4" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="led-ring-wrap">
+        <div class="led-label">A Ring (60 LEDs)</div>
+        <svg id="led-ring" width="140" height="140" viewBox="-1.1 -1.1 2.2 2.2"></svg>
+      </div>
+    </div>
+    <div id="led-pattern-label">pattern: —</div>
   </div>
 
   <!-- 3D Robot View -->
@@ -241,13 +280,45 @@
     <small style="display:block;margin-top:0.5rem;color:#555">Keyboard: <kbd>Esc</kbd></small>
   </div>
 
-  <!-- High-level Controls -->
+  <!-- Controls -->
   <div class="card">
     <h2>Controls</h2>
-    <button class="btn" onclick="sendCmd('home')">Home All</button>
-    <button class="btn" onclick="sendCmd('play')">Play</button>
-    <button class="btn" onclick="sendCmd('flip')">Flip</button>
-    <button class="btn" onclick="sendCmd('skip')">Skip</button>
+
+    <div class="controls-row">
+      <button class="btn" onclick="sendCmd('home')">Home All</button>
+      <button class="btn" id="start-btn" onclick="triggerStart()" disabled
+              title="Load slot 0 onto the player and begin playback">Start Playing</button>
+      <button class="btn" id="flip-btn" onclick="sendCmd('flip')" disabled
+              title="Flip Now — flips the record currently on the player">Flip Now</button>
+    </div>
+
+    <div class="controls-row">
+      <span class="controls-label">Play Mode</span>
+      <button class="btn active-mode" id="mode-btn-SEQUENTIAL"
+              onclick="setPlayMode('SEQUENTIAL')">Sequential</button>
+      <button class="btn" id="mode-btn-SIDE_REPEAT"
+              onclick="setPlayMode('SIDE_REPEAT')">Repeat Side</button>
+      <button class="btn" id="mode-btn-SINGLE_REPEAT"
+              onclick="setPlayMode('SINGLE_REPEAT')">Repeat Record</button>
+    </div>
+
+    <div class="controls-row">
+      <span class="controls-label">Queue</span>
+      <button class="btn slot-btn" id="slot-btn-0" onclick="selectSlot(0)">Slot 0 ●</button>
+      <button class="btn slot-btn" id="slot-btn-1" onclick="selectSlot(1)">Slot 1 ●</button>
+      <button class="btn slot-btn" id="slot-btn-2" onclick="selectSlot(2)">Slot 2 ●</button>
+      <button class="btn slot-btn" id="slot-btn-3" onclick="selectSlot(3)">Slot 3 ●</button>
+      <button class="btn slot-btn" id="slot-btn-4" onclick="selectSlot(4)">Slot 4 ●</button>
+    </div>
+    <div style="font-size:0.78rem;color:#666;margin-top:0.25rem">
+      Slot selection takes effect at the next decision point (after current side finishes or immediately on override).
+      &nbsp;●&nbsp;= record in slot &nbsp;○&nbsp;= record out
+    </div>
+    <div style="font-size:0.82rem;color:#aaa;margin-top:0.5rem">
+      Now playing: <span id="current-slot" style="color:#4f4">—</span>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      Override pending: <span id="override-slot" style="color:#fa0">—</span>
+    </div>
   </div>
 
   <!-- Log -->

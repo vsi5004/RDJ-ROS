@@ -9,5 +9,6 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>vinyl_robot_msgs</depend>
+  <depend>canopen_interfaces</depend>
   <export><build_type>ament_python</build_type></export>
 </package>

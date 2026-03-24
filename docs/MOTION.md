@@ -37,7 +37,7 @@ Two independent estop sources, tracked separately in motion_coordinator:
 
 | Source | Topic | Managed by | Behaviour |
 |---|---|---|---|
-| Hardware (LiDAR) | `/safety/estop` | `lidar_safety` | Published continuously; auto-clears when object leaves zone |
+| Hardware (LiDAR) | `/safety/status` (`estop` field) | `lidar_safety` | Published continuously; auto-clears when object leaves zone |
 | Software (operator) | `/user/estop` | Web UI / operator | Latching; must be explicitly cleared |
 
 `motion_coordinator.estop` property returns `_hw_estop OR _sw_estop`. On either activating: `_halt_all()` sets XTARGET = XACTUAL on all stepper axes. Clearing software estop when hardware estop is still active has no effect on motion.
@@ -104,7 +104,7 @@ If safety fires estop during homing, all axes halt immediately. The next homing 
 
 ## Safety Integration
 
-motion_coordinator subscribes `/safety/velocity_scale` and `/safety/estop`.
+motion_coordinator subscribes `/safety/status` (`vinyl_robot_msgs/SafetyStatus`), which carries `velocity_scale`, `estop`, and `reason` in a single message.
 
 - Before any RPDO: multiply velocity by `safety_scale`. If scale = 0.0, move is blocked.
 - On estop: write XTARGET = XACTUAL on all axes (immediate deceleration stop).

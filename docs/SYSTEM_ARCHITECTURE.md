@@ -6,14 +6,14 @@ The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker.
 
 | Package | Status | Notes |
 |---|---|---|
-| `vinyl_robot_msgs` | ✅ Complete | 6 actions, 2 messages |
+| `vinyl_robot_msgs` | ✅ Complete | 6 actions, 4 messages |
 | `motion_coordinator` | ✅ Complete | Full homing, action servers, jog, servo raw, hw+sw estop |
 | `mock_nodes` | ✅ Complete | 50 Hz physics simulation of all 5 CAN nodes |
 | `lidar_safety` | ✅ Functional stub | mock_mode only; real LiDAR CV pipeline future work |
 | `turntable_monitor` | ✅ Functional stub | mock_mode only; real camera CV pipeline future work |
-| `web_interface` | ✅ Complete | rosbridge + dark UI with jog panel, servo calibration, estop |
-| `state_machine` | 🔄 Partial stub | HomeAll wired up; BehaviorTree.CPP implementation pending |
-| `led_controller` | 🔄 Stub | Logging only |
+| `web_interface` | ✅ Complete | rosbridge + dark UI with 3D visualizer, jog panel, servo calibration, controls |
+| `state_machine` | ✅ Complete | Full py_trees behavior tree; InitialLoad, OneCycle, flip/swap/halt, fault recovery |
+| `led_controller` | ✅ Complete | Fill-to-target animations, homing sweep, publishes /led/pixels at 20 Hz |
 | `diagnostics_aggregator` | ✅ Functional | Publishes DiagnosticArray at 1 Hz |
 | `record_identifier` | ❌ Not started | Optional future package |
 
@@ -23,13 +23,13 @@ The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker.
 
 2. **motion_coordinator** — Core intelligence node. Converts mm/deg to microsteps, enforces safety scaling, orchestrates homing, hosts action servers, handles jog and raw servo commands.
 
-3. **lidar_safety** — SICK TIM571 laser scan → dynamic safety zones (warning 400 mm, stop 200 mm). Publishes `/safety/velocity_scale` (0.0–1.0) and `/safety/estop`. In mock_mode always publishes scale=1.0, estop=false.
+3. **lidar_safety** — SICK TIM571 laser scan → dynamic safety zones (warning 400 mm, stop 200 mm). Publishes a single `/safety/status` (`SafetyStatus`) message with `velocity_scale` (0.0–1.0), `estop` flag, and `reason` string. In mock_mode always publishes scale=1.0, estop=false.
 
 4. **turntable_monitor** — Camera CV pipeline tracks tonearm radial position. Publishes `/turntable/progress` (0.0–1.0). In mock_mode holds at 0.0.
 
-5. **state_machine** — Orchestrator. Currently routes `/user/command: home` to the HomeAll action server. Full BehaviorTree.CPP implementation pending (see BEHAVIOR_TREE.md).
+5. **state_machine** — Orchestrator. Runs a py_trees behavior tree at 10 Hz: auto-homes on startup, waits for operator "Start Playing", then loops through the queue (lift → decide → flip/swap → place → press play). Publishes `/state_machine/tip` (active behaviour name) and `/state_machine/status` (composite state). See BEHAVIOR_TREE.md.
 
-6. **led_controller** — Stub. Will map robot state to DotStar LED patterns.
+6. **led_controller** — Maps robot state to DotStar LED patterns. Fill-to-target chase animation during motion, homing sweep, breathing idle. Publishes `/led/pixels` (UInt8MultiArray) at 20 Hz; sends dominant colour to CAN SDO on real hardware.
 
 7. **diagnostics_aggregator** — Aggregates motion and safety health, publishes `DiagnosticArray`.
 
@@ -48,13 +48,14 @@ The ROS 2 system runs on a Toradex Verdin iMX8M Plus with Torizon OS and Docker.
 Node names: `x_axis`, `z_axis`, `a_axis`, `pincher`, `player`
 
 ### Safety
-| Topic | Type | Publisher | Subscriber |
+| Topic | Type | Publisher | Subscribers |
 |---|---|---|---|
-| `/safety/velocity_scale` | `std_msgs/Float32` | lidar_safety | motion_coordinator |
-| `/safety/estop` | `std_msgs/Bool` | lidar_safety | motion_coordinator, web_interface |
-| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator |
+| `/safety/status` | `vinyl_robot_msgs/SafetyStatus` | lidar_safety | motion_coordinator, state_machine, led_controller, web_interface |
+| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator, state_machine |
 
-**Hardware vs software estop**: `/safety/estop` is sensor-driven (LiDAR). `/user/estop` is operator-driven (web UI button or `Escape` key). motion_coordinator tracks them independently — clearing a software estop does not override an active hardware estop.
+`SafetyStatus` fields: `velocity_scale` (float32, 1.0 = clear / 0.25 = warning / 0.0 = stop), `estop` (bool), `reason` (string: `""` \| `"lidar_warning_zone"` \| `"lidar_stop_zone"`).
+
+**Hardware vs software estop**: `/safety/status.estop` is sensor-driven (LiDAR stop zone). `/user/estop` is operator-driven (web UI ⛔ button or `Escape` key). motion_coordinator tracks them independently — clearing a software estop does not override an active hardware estop.
 
 ### Motion
 | Topic | Type | Publisher | Subscriber |
@@ -73,7 +74,19 @@ Node names: `x_axis`, `z_axis`, `a_axis`, `pincher`, `player`
 | `/user/command` | `std_msgs/String` | web_interface | state_machine |
 | `/user/play_mode` | `std_msgs/String` | web_interface | state_machine |
 | `/user/select_record` | `std_msgs/UInt8` | web_interface | state_machine |
-| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator |
+| `/user/estop` | `std_msgs/Bool` | web_interface | motion_coordinator, state_machine |
+
+Valid `/user/command` values: `"home"` (re-home), `"start"` (begin playing), `"flip"` (manual flip).
+
+### State Machine Observability
+| Topic | Type | Publisher | Subscribers |
+|---|---|---|---|
+| `/state_machine/tip` | `std_msgs/String` | state_machine | web_interface |
+| `/state_machine/status` | `vinyl_robot_msgs/StateMachineStatus` | state_machine | web_interface |
+| `/led/pattern` | `std_msgs/String` | state_machine | led_controller |
+| `/led/pixels` | `std_msgs/UInt8MultiArray` | led_controller | web_interface |
+
+`StateMachineStatus` fields: `slot_idx` (uint8, current record slot index), `current_side` (string, "A" or "B"), `player_has_record` (bool), `initial_loaded` (bool). `slot_idx` is suppressed (0) until `initial_loaded` to prevent slot indicators flickering before the first disc is physically moved.
 
 ### Sensors
 | Topic | Type | Publisher | Subscriber |

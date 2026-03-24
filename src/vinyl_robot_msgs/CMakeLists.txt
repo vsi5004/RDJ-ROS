@@ -8,6 +8,8 @@ find_package(action_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotionStatus.msg"
+  "msg/SafetyStatus.msg"
+  "msg/StateMachineStatus.msg"
   "msg/AlbumMetadata.msg"
   "action/MoveToPosition.action"
   "action/HomeAll.action"

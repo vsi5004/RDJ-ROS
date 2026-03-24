@@ -91,6 +91,13 @@ class LEDControllerNode(Node):
         self._x_moving: bool = False
         self._a_moving: bool = False
 
+        # ── Motion holdoff — stay in MOVING for N frames after axes stop ───────
+        # Bridges the brief inter-node gap between consecutive motion actions so
+        # the LED doesn't flash back to the semantic pattern between tree steps.
+        _hold_s: float = float(cfg.get("motion_hold_s", 0.8))
+        self._motion_hold_frames: int = max(1, int(_hold_s * anim_hz))
+        self._motion_hold_counter: int = 0
+
         # ── Per-LED alpha buffers (0.0–1.0), persist across frames ────────────
         self._strip_alpha: list = [0.0] * self._strip_leds
         self._ring_alpha: list = [0.0] * self._ring_leds
@@ -155,9 +162,15 @@ class LEDControllerNode(Node):
             return "ESTOP"
         if self._velocity_scale < self._warn_threshold:
             return "SAFETY_WARNING"
-        # Show fill-to-target animation for any operational motion (not during homing or fault)
+        # Show fill-to-target animation for any operational motion (not during homing or fault).
+        # The holdoff counter keeps MOVING active for a short window after axes stop so the LED
+        # doesn't flash back to the semantic pattern during brief inter-node transition gaps.
         _no_move_override = {"HOMING", "FAULT", "FAULT_PARKED"}
         if (self._x_moving or self._a_moving) and self._semantic_pattern not in _no_move_override:
+            self._motion_hold_counter = self._motion_hold_frames
+            return "MOVING"
+        if self._motion_hold_counter > 0 and self._semantic_pattern not in _no_move_override:
+            self._motion_hold_counter -= 1
             return "MOVING"
         return self._semantic_pattern if self._semantic_pattern in COLORS else "IDLE"
 

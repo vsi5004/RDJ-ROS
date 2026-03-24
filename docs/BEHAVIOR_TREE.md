@@ -36,31 +36,49 @@ Selector("RootSelector")                    ← failure → fault recovery
 │                   ├── Selector("FlipOrSwap")
 │                   │   ├── Sequence("FlipSubtree")
 │                   │   │   ├── IsFlipAction
-│                   │   │   ├── FlipStage_SwingA    (A→180°, skip X/Z)
-│                   │   │   ├── FlipStage_BackX     (X→700mm, skip Z/A)
-│                   │   │   ├── FlipStage_RaiseZ    (Z→80mm, skip X/A)
+│                   │   │   ├── FlipStage_FlipStage  (ExecuteTrajectory: A+Z concurrent WP0, X retract WP1)
 │                   │   │   ├── Selector("EnsureFlipClearance")
 │                   │   │   │   ├── FlipClearanceCheck
 │                   │   │   │   └── Sequence("RaiseForClearance")
 │                   │   │   │       ├── RaiseForClearance_ZUp
 │                   │   │   │       └── FlipClearanceCheck2
 │                   │   │   ├── FlipRecordAction
-│                   │   │   └── FlipReturnToPlayer  (X→950, Z→60, A→90°)
+│                   │   │   ├── CommitFlipSideAction
+│                   │   │   └── FlipReturnToPlayer  (MoveToPosition X→950, Z→60, A→90°)
+│                   │   ├── Sequence("FlipThenSwapSubtree")
+│                   │   │   ├── IsFlipThenSwapAction
+│                   │   │   ├── FTS_FlipStage_FlipStage  (ExecuteTrajectory)
+│                   │   │   ├── Selector("EnsureFlipClearance_FTS")
+│                   │   │   ├── FTS_FlipRecordAction
+│                   │   │   ├── FTS_CommitFlipSide
+│                   │   │   ├── FTS_TransitToDeposit  (DynamicTransitToSlotAction → X=50, Z=slot_top_z[prev])
+│                   │   │   ├── FTS_ZDownToDeposit    (DynamicMoveToSlot, slot_top=False → Z=slot_z[prev])
+│                   │   │   ├── FTS_GripOpen
+│                   │   │   ├── FTS_ZUpAfterDeposit   (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[prev])
+│                   │   │   ├── FTS_RetractX          (X→x_clear_mm, skip Z/A)
+│                   │   │   ├── FTS_ZToNewSlotTop     (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[curr])
+│                   │   │   ├── FTS_ApproachX         (X→stack_x, skip Z/A)
+│                   │   │   ├── FTS_ZDownToPickup     (DynamicMoveToSlot, slot_top=False → Z=slot_z[curr])
+│                   │   │   ├── Retry(FTS_GripClose, n=3)
+│                   │   │   ├── FTS_SetCurrentSide
+│                   │   │   ├── FTS_ZUpAfterPickup    (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[curr])
+│                   │   │   ├── FTS_RetractAfterPickup (X→x_clear_mm, skip Z/A)
+│                   │   │   └── FTS_ReturnToPlayer    (ExecuteTrajectory: velocity-mode transit)
 │                   │   └── Sequence("SwapSubtree")
 │                   │       ├── IsSwapAction
-│                   │       ├── Swap_ZClear
-│                   │       ├── Sequence("Swap_TransitToStack")
-│                   │       │   ├── Swap_TransitToStack_Trail  (X→500, skip A)
-│                   │       │   └── Swap_TransitToStack_Arrive (X→50, A→270°)
-│                   │       ├── Swap_ZToOldSlot     (DynamicMoveToSlotAction)
+│                   │       ├── Swap_TransitToDeposit (DynamicTransitToSlotAction → X=50, Z=slot_top_z[prev])
+│                   │       ├── Swap_ZDownToDeposit   (DynamicMoveToSlot, slot_top=False → Z=slot_z[prev])
 │                   │       ├── Swap_GripOpen
-│                   │       ├── Swap_ZClearAfterDeposit
-│                   │       ├── Swap_ZToNewSlot     (DynamicMoveToSlotAction)
+│                   │       ├── Swap_ZUpAfterDeposit  (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[prev])
+│                   │       ├── Swap_RetractX         (X→x_clear_mm, skip Z/A)
+│                   │       ├── Swap_ZToNewSlotTop    (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[curr])
+│                   │       ├── Swap_ApproachX        (X→stack_x, skip Z/A)
+│                   │       ├── Swap_ZDownToPickup    (DynamicMoveToSlot, slot_top=False → Z=slot_z[curr])
 │                   │       ├── Retry(Swap_GripClose, n=3)
-│                   │       ├── Swap_ZClearWithRecord
-│                   │       └── Sequence("Swap_ReturnToPlayer")
-│                   │           ├── Swap_ReturnToPlayer_Trail  (X→500, skip A)
-│                   │           └── Swap_ReturnToPlayer_Arrive (X→950, A→90°)
+│                   │       ├── SetCurrentSideFromSlotAction
+│                   │       ├── Swap_ZUpAfterPickup   (DynamicMoveToSlot, slot_top=True  → Z=slot_top_z[curr])
+│                   │       ├── Swap_RetractAfterPickup (X→x_clear_mm, skip Z/A)
+│                   │       └── Swap_ReturnToPlayer   (ExecuteTrajectory: velocity-mode transit)
 │                   ├── Sequence("PlaceRecord")
 │                   │   ├── PlaceRecord_ZDown
 │                   │   ├── PlaceRecord_GripOpen
@@ -164,48 +182,60 @@ an eternal operational loop.  Propagates FAILURE unchanged (fault recovery path)
 
 ### DynamicMoveToSlotAction
 
-Subclasses `py_trees_ros.action_clients.FromBlackboard` rather than `FromConstant`.
-At `initialise()` it reads `current_record_index` (or `prev_record_index`) and the
-slot Z heights from config, builds a fresh `MoveToPosition.Goal`, writes it to its own
-private blackboard key, then calls `super().initialise()` which reads and sends it.
+**Z-only** (`skip_x=True, skip_a=True`). X and A must be pre-positioned by the caller. At `initialise()` reads the slot index from the blackboard and builds a fresh `MoveToPosition.Goal` targeting:
+- `slot_top=False` (default): `slot_z[idx]` — grip/release height (bottom of slot envelope)
+- `slot_top=True`: `slot_z[idx] + shelf_clearance_mm` — entry/exit height (top of slot envelope)
 
-This avoids the `FromConstant` limitation where the goal is captured at construction time
-and cannot be updated by overriding `self.action_goal`.
+### DynamicTransitToSlotAction
 
-## Transit — Trailing A Rotation
+3-waypoint `ExecuteTrajectory` built at runtime. Arrives at `X=stack_x, Z=slot_top_z, A=arrive_a`.
 
-Moving a record between the stack (X≈50mm) and the turntable (X≈950mm) while holding
-it in the gripper risks the record swinging into obstacles if A rotates too early.
+- **WP0** (vel−): X cruises toward stack, Z rises to `safe_z`, **A rotates to `arrive_a`**. A rotation completes while X > 250mm (before A-collision zone). Advance when X ≤ pre_x threshold AND Z + A `in_position`.
+- **WP1** (vel−, skip_a): Z descends to `slot_top_z` (top of slot envelope). Advance when X ≤ stack_x + blend_mm.
+- **WP2** (position, skip_z, skip_a): X final stop at stack_x.
 
-Both transit helpers use a two-phase approach:
+### ExecuteTrajectoryAction
+
+`_FromConstant` subclass that sends a fixed `ExecuteTrajectory.Goal` (waypoints compiled at tree-build time from YAML or Python dicts). Used for flip staging and transit trajectories.
+
+## Stack Operations — Z-Envelope Safety
+
+Each stack slot has 20mm of usable vertical clearance. The correct sequence for any slot operation:
 
 ```
-Phase 1 — Trail  (skip_a=True):
-    X moves to the midpoint (default 50% of travel), Z adjusts to target height.
-    A stays wherever it is — the record "trails" the carriage.
-
-Phase 2 — Arrive:
-    X moves to the destination, A rotates to the arrival angle simultaneously.
-    By the time A starts rotating, X is halfway across the open space.
+DynamicTransitToSlotAction   → arrives at X=stack_x, Z=slot_top_z (top of envelope), A=arrive_a
+DynamicMoveToSlotAction      → Z → slot_z (descend to grip height)
+GripAction                   → operate gripper
+DynamicMoveToSlotAction(top) → Z → slot_top_z (ascend to top of envelope)
+_stack_retract_x             → X → x_clear_mm (250mm) — Z now free to cross slot boundaries
+DynamicMoveToSlotAction(top) → Z → slot_top_z[new_slot] (reposition Z while X safe)
+_stack_approach_x            → X → stack_x (enter new slot at top of envelope)
+... repeat for next slot ...
 ```
 
-`trailing_split` in `robot_params.yaml` (default 0.50) controls when the rotation begins.
+**A is never rotated while X < x_clear_mm (250mm)** — stack vertical pillars constrain the arm. A rotation happens during WP0 of DynamicTransitToSlotAction when X > 400mm. All `_stack_retract_x`, `_stack_approach_x`, and `DynamicMoveToSlotAction` calls are `skip_a=True`.
 
-**Turntable→Stack** (`_transit_to_stack`): midpoint X=500mm, arrival A=270°
-**Stack→Turntable** (`_transit_to_turntable`): midpoint X=500mm, arrival A=90°
+## Transit — Velocity-Mode Trajectories
+
+All transits now use `ExecuteTrajectoryAction` with velocity-mode waypoints. X runs at cruise speed via TMC5160 RAMPMODE=VEL; the executor monitors X position at 50 Hz to trigger the next waypoint.
+
+**Stack→Turntable** (`_transit_to_turntable`):
+- WP0 (vel+, skip_a): X cruises, Z descends to `tt_z_approach`. Advance when X ≥ 500mm.
+- WP1 (position): X to 950mm, A rotates to 90°.
+
+**Turntable→Stack** (`_transit_to_stack`):
+- WP0 (vel−): X cruises, Z rises to `safe_z`, **A rotates to 270°** (completes before X < 250mm). Advance when X ≤ 500mm AND Z + A done.
+- WP1 (position, skip_z, skip_a): X to stack_x.
+
+`trailing_split: 0.50` in `robot_params.yaml` sets the midpoint threshold (500mm).
 
 ## Flip vs. Swap — Return to Player
 
-After a flip, the arm is at X≈700mm (flip staging), close to the turntable.
-`FlipReturnToPlayer` issues a single three-axis move (X→950, Z→60, A→90°) to return
-directly — no backward motion.
+After a flip, the arm is at flip_staging (X≈700mm). `FlipReturnToPlayer` issues a single three-axis `MoveToPosition` (X→950, Z→60, A→90°).
 
-After a swap, the arm is at X=50mm (stack) holding the new record.
-`Swap_ReturnToPlayer` uses the standard `_transit_to_turntable` two-phase helper to
-return safely with the trailing A logic.
+After a swap or flip-then-swap, the arm is at `x_clear_mm=250mm` after the post-pickup X retract. `Swap_ReturnToPlayer` / `FTS_ReturnToPlayer` uses `_transit_to_turntable` (velocity-mode trajectory starting from X=250mm).
 
-Both paths deliver the arm to `X=turntable.x_mm, Z=turntable.z_approach_mm, A=turntable.a_deg`
-before `PlaceRecord` runs, so `PlaceRecord` only needs ZDown → GripOpen → ZUp.
+Both paths deliver the arm to `X=turntable.x_mm, Z=turntable.z_approach_mm, A=turntable.a_deg` before `PlaceRecord` runs.
 
 ## Logging
 

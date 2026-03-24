@@ -28,13 +28,15 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String, UInt8MultiArray
 
-from vinyl_robot_msgs.action import FlipRecord, Grip, HomeAll, MoveToPosition, PressPlay, SetSpeed
+from vinyl_robot_msgs.action import ExecuteTrajectory, FlipRecord, Grip, HomeAll, MoveToPosition, PressPlay, SetSpeed
 from vinyl_robot_msgs.msg import MotionStatus, SafetyStatus
 
 from .can_interface import (
     CW_ENABLE,
     CW_HALT,
     RAMP_POSITION,
+    RAMP_VELOCITY_FWD,
+    RAMP_VELOCITY_REV,
     AAxisTPDO,
     ServoTPDO,
     StepperTPDO,
@@ -227,6 +229,15 @@ class MotionCoordinatorNode(Node):
             SetSpeed,
             "/motion/set_speed",
             execute_callback=self._set_speed_cb,
+            goal_callback=self._accept_goal,
+            cancel_callback=self._accept_cancel,
+            callback_group=cb,
+        )
+        self._traj_server = ActionServer(
+            self,
+            ExecuteTrajectory,
+            "/motion/execute_trajectory",
+            execute_callback=self._execute_trajectory_cb,
             goal_callback=self._accept_goal,
             cancel_callback=self._accept_cancel,
             callback_group=cb,
@@ -573,6 +584,188 @@ class MotionCoordinatorNode(Node):
             goal_handle.succeed()
         else:
             goal_handle.abort()
+        return result
+
+    # ── Action: ExecuteTrajectory ─────────────────────────────────────────────
+
+    def _send_waypoint_rpdos(self, wp, default_scale: float) -> None:
+        """Send RPDOs for one trajectory waypoint.
+
+        ramp_mode in the waypoint applies only to X (the transit axis).
+        Z and A always use position mode so they stop at their targets.
+        dmax_factor is packed into byte 7 bits [7:2] for all axes.
+        """
+        scale = (wp.velocity_scale if wp.velocity_scale > 0.0 else default_scale) * self.safety_scale
+        # X gets the full bitfield: dmax_factor (bits 7:2) | ramp_mode (bits 1:0)
+        x_ramp_byte = (int(wp.dmax_factor) << 2) | (int(wp.ramp_mode) & 0x03)
+        # Z and A always use position mode; dmax_factor still applies for blend control
+        za_ramp_byte = (int(wp.dmax_factor) << 2) | RAMP_POSITION
+
+        if not wp.skip_x:
+            self.send_rpdo_stepper(
+                "x_axis",
+                self.mm_to_steps("x_axis", wp.x_mm),
+                self.mmps_to_vmax("x_axis", 200.0) if scale > 0 else 1,
+                CW_ENABLE,
+                x_ramp_byte,
+            )
+        if not wp.skip_z:
+            self.send_rpdo_stepper(
+                "z_axis",
+                self.mm_to_steps("z_axis", wp.z_mm),
+                self.mmps_to_vmax("z_axis", 100.0),
+                CW_ENABLE,
+                za_ramp_byte,
+            )
+        if not wp.skip_a:
+            self.send_rpdo_stepper(
+                "a_axis",
+                self.deg_to_steps(wp.a_deg),
+                self.mmps_to_vmax("a_axis", 60.0),
+                CW_ENABLE,
+                za_ramp_byte,
+            )
+
+    def _execute_trajectory_cb(self, goal_handle):
+        goal = goal_handle.request
+        feedback = ExecuteTrajectory.Feedback()
+        result = ExecuteTrajectory.Result()
+
+        if self.estop:
+            result.success = False
+            result.error_msg = "E-stop active"
+            goal_handle.abort()
+            return result
+
+        waypoints = goal.waypoints
+        if not waypoints:
+            result.success = False
+            result.error_msg = "No waypoints"
+            goal_handle.abort()
+            return result
+
+        blend_mm = float(goal.blend_radius_mm)
+        blend_deg = float(goal.blend_radius_deg)
+        default_scale = float(goal.default_velocity_scale)
+
+        # Pre-compute final X and A step targets so LEDs track the true destination
+        # throughout the trajectory, not each intermediate waypoint.
+        final_x_steps = None
+        final_a_steps = None
+        for wp in waypoints:
+            if not wp.skip_x:
+                final_x_steps = self.mm_to_steps("x_axis", wp.x_mm)
+            if not wp.skip_a:
+                final_a_steps = self.deg_to_steps(wp.a_deg)
+        if final_x_steps is not None:
+            self._x_target_steps = final_x_steps
+        if final_a_steps is not None:
+            self._a_target_steps = final_a_steps
+
+        # Send first waypoint RPDOs and restore LED targets
+        self._send_waypoint_rpdos(waypoints[0], default_scale)
+        if final_x_steps is not None:
+            self._x_target_steps = final_x_steps
+        if final_a_steps is not None:
+            self._a_target_steps = final_a_steps
+
+        # Log trajectory start
+        last_axes = []
+        for wp in waypoints[-2:]:
+            if not wp.skip_x:
+                last_axes.append(f"X→{wp.x_mm:.0f}mm")
+            if not wp.skip_z:
+                last_axes.append(f"Z→{wp.z_mm:.0f}mm")
+            if not wp.skip_a:
+                last_axes.append(f"A→{wp.a_deg:.0f}°")
+        self.get_logger().info(
+            f"[traj] {goal.trajectory_name!r}: {len(waypoints)} wps "
+            f"({', '.join(last_axes)})"
+        )
+
+        # Brief settle before polling — same as MoveToPosition
+        time.sleep(0.1)
+
+        waypoints_completed = 0
+        timeout_per_wp = 60.0
+
+        for i, wp in enumerate(waypoints):
+            is_last = i == len(waypoints) - 1
+            elapsed = 0.0
+
+            while elapsed < timeout_per_wp:
+                if goal_handle.is_cancel_requested:
+                    self._halt_all()
+                    goal_handle.canceled()
+                    result.success = False
+                    result.error_msg = "Cancelled"
+                    return result
+
+                if self.estop:
+                    result.success = False
+                    result.error_msg = "E-stop active"
+                    goal_handle.abort()
+                    return result
+
+                xs = self.node_states["x_axis"]
+                zs = self.node_states["z_axis"]
+                as_ = self.node_states["a_axis"]
+
+                if is_last:
+                    # Final waypoint: wait for full in_position on all active axes
+                    x_done = wp.skip_x or xs.in_position
+                    z_done = wp.skip_z or zs.in_position
+                    a_done = wp.skip_a or as_.in_position
+                elif wp.ramp_mode in (RAMP_VELOCITY_FWD, RAMP_VELOCITY_REV):
+                    # Velocity-mode X: advance when X crosses the threshold position
+                    if wp.ramp_mode == RAMP_VELOCITY_FWD:
+                        x_done = wp.skip_x or (self.x_pos_mm() >= wp.x_mm)
+                    else:
+                        x_done = wp.skip_x or (self.x_pos_mm() <= wp.x_mm)
+                    z_done = wp.skip_z or zs.in_position
+                    a_done = wp.skip_a or as_.in_position
+                else:
+                    # Position-mode intermediate: blend radius
+                    x_done = wp.skip_x or abs(self.x_pos_mm() - wp.x_mm) <= blend_mm
+                    z_done = wp.skip_z or abs(self.z_pos_mm() - wp.z_mm) <= blend_mm
+                    a_done = wp.skip_a or abs(self.a_pos_deg() - wp.a_deg) <= blend_deg
+
+                feedback.x_actual_mm = self.x_pos_mm()
+                feedback.z_actual_mm = self.z_pos_mm()
+                feedback.a_actual_deg = self.a_pos_deg()
+                feedback.current_waypoint_idx = i
+                feedback.x_in_position = xs.in_position
+                feedback.z_in_position = zs.in_position
+                feedback.a_in_position = as_.in_position
+                goal_handle.publish_feedback(feedback)
+
+                if x_done and z_done and a_done:
+                    waypoints_completed += 1
+                    if not is_last:
+                        self._send_waypoint_rpdos(waypoints[i + 1], default_scale)
+                        # Restore final LED targets after send (which overwrites them)
+                        if final_x_steps is not None:
+                            self._x_target_steps = final_x_steps
+                        if final_a_steps is not None:
+                            self._a_target_steps = final_a_steps
+                    break
+
+                time.sleep(0.02)
+                elapsed += 0.02
+            else:
+                result.success = False
+                result.error_msg = f"Waypoint {i} timeout"
+                result.waypoints_completed = waypoints_completed
+                goal_handle.abort()
+                return result
+
+        result.success = True
+        result.error_msg = ""
+        result.x_final_mm = self.x_pos_mm()
+        result.z_final_mm = self.z_pos_mm()
+        result.a_final_deg = self.a_pos_deg()
+        result.waypoints_completed = waypoints_completed
+        goal_handle.succeed()
         return result
 
     # ── Action: HomeAll ───────────────────────────────────────────────────────

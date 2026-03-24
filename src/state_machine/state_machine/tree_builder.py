@@ -28,8 +28,9 @@ Tree topology (see docs/BEHAVIOR_TREE.md for full specification):
   │                   │   └── ZUpToClear
   │                   ├── DecideAction
   │                   ├── Selector("FlipOrSwap")
-  │                   │   ├── FlipSubtree
-  │                   │   └── SwapSubtree
+  │                   │   ├── FlipSubtree         (next_action=="flip")
+  │                   │   ├── FlipThenSwapSubtree (next_action=="flip_swap": B-side SEQUENTIAL)
+  │                   │   └── SwapSubtree         (next_action=="swap")
   │                   ├── Sequence("PlaceRecord")
   │                   │   ├── MoveToPlayerApproach
   │                   │   ├── ZDownToPlatter
@@ -46,8 +47,11 @@ from rclpy.node import Node
 from . import blackboard_keys as K
 from .actions import (
     ClearForceRehomeAction,
+    CommitFlipSideAction,
     DecideAction,
     DynamicMoveToSlotAction,
+    DynamicTransitToSlotAction,
+    ExecuteTrajectoryAction,
     FlipRecordAction,
     GripAction,
     HomeAllAction,
@@ -57,6 +61,7 @@ from .actions import (
     PressPlayAction,
     PublishLEDAction,
     ResetProgressAction,
+    SetCurrentSideFromSlotAction,
     SetPlayerStateAction,
     SetSpeedAction,
 )
@@ -64,6 +69,7 @@ from .conditions import (
     FlipClearanceCheck,
     IsAllHomed,
     IsFlipAction,
+    IsFlipThenSwapAction,
     IsHaltRequested,
     IsInitialLoaded,
     IsSwapAction,
@@ -118,7 +124,7 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         )
 
     def _z_up_to_safe(name: str = "ZUpToSafe") -> MoveToPositionAction:
-        """Raise Z to full safe clearance (safe_park height)."""
+        """Raise Z to full safe clearance (safe_park height). Only safe when X > x_clear_mm."""
         return MoveToPositionAction(
             name=name,
             node=node,
@@ -127,69 +133,67 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
             skip_a=True,
         )
 
-    # ── Transit helpers (record trailing safety) ──────────────────────────────
-    # A=0° is perpendicular to the X rail (pointing backward).  During transit
-    # the record trails the carriage: A stays at the source angle for the first
-    # `trailing_split` fraction of the X move, then rotates to the destination
-    # angle in the remaining travel so the record arrives correctly oriented.
+    # ── Stack entry/exit helpers ───────────────────────────────────────────────
+
+    _x_clear_mm = float(config.get("homing", {}).get("record_stack", {}).get("x_clear_mm", 250.0))
+
+    def _stack_retract_x(name: str = "StackRetractX") -> MoveToPositionAction:
+        """Retract X to safe clear position outside stack. Z and A are not moved."""
+        return MoveToPositionAction(name, node=node, x_mm=_x_clear_mm, skip_z=True, skip_a=True)
+
+    def _stack_approach_x(name: str = "StackApproachX") -> MoveToPositionAction:
+        """Enter stack at current Z (must already be at slot_top_z). A is not moved."""
+        return MoveToPositionAction(name, node=node, x_mm=stack_x, skip_z=True, skip_a=True)
+
+    # ── Transit helpers ───────────────────────────────────────────────────────
 
     tran_cfg = config.get("positions", {}).get("transit", {})
-    trailing_split = tran_cfg.get("trailing_split", 0.70)
     stack_x = pos["queue_stack"]["x_mm"]
-    tt_x = turntable["x_mm"]
-    travel = tt_x - stack_x
 
-    def _transit_to_turntable(name: str) -> py_trees.composites.Sequence:
-        """Stack→Turntable: A holds current angle for first 50%, rotates to 90° in last 50%."""
-        waypoint_x = tt_x - (1.0 - trailing_split) * travel
-        arrive_a_deg = tran_cfg.get("to_turntable_arrive_deg", turntable["a_deg"])
-        return py_trees.composites.Sequence(
-            name=name,
-            memory=True,
-            children=[
-                MoveToPositionAction(
-                    f"{name}_Trail",
-                    node=node,
-                    x_mm=waypoint_x,
-                    z_mm=turntable["z_approach_mm"],
-                    skip_a=True,
-                ),
-                MoveToPositionAction(
-                    f"{name}_Arrive",
-                    node=node,
-                    x_mm=tt_x,
-                    z_mm=turntable["z_approach_mm"],
-                    a_deg=arrive_a_deg,
-                    skip_z=True,
-                ),
-            ],
+    traj_cfg = config.get("trajectories", {})
+    _blend_mm_default = float(traj_cfg.get("blend_radius_mm", 20.0))
+    _blend_deg_default = float(traj_cfg.get("blend_radius_deg", 15.0))
+
+    _RAMP_MAP = {"position": 0, "vel_pos": 1, "vel_neg": 2}
+
+    def _normalise_waypoints(raw: list) -> list:
+        """Convert YAML waypoint dicts: resolve string ramp_mode, drop 'dynamic' z placeholders."""
+        result = []
+        for wp in raw:
+            wp = dict(wp)
+            rm = wp.get("ramp_mode", 0)
+            if isinstance(rm, str):
+                wp["ramp_mode"] = _RAMP_MAP.get(rm, 0)
+            if wp.get("z_mm") == "dynamic":
+                wp["z_mm"] = 0.0  # placeholder; DynamicTransitToSlotAction fills at runtime
+            result.append(wp)
+        return result
+
+    def _load_trajectory(node_name: str, traj_name: str = None) -> ExecuteTrajectoryAction:
+        """Load a static trajectory definition from config['trajectories'][traj_name]."""
+        key = traj_name or node_name
+        tdef = traj_cfg.get(key, {})
+        blend_mm = float(tdef.get("blend_radius_mm", _blend_mm_default))
+        blend_deg = float(tdef.get("blend_radius_deg", _blend_deg_default))
+        default_scale = float(tdef.get("default_velocity_scale",
+                                       traj_cfg.get("default_velocity_scale", 1.0)))
+        return ExecuteTrajectoryAction(
+            name=node_name,
+            node=node,
+            waypoints=_normalise_waypoints(tdef.get("waypoints", [])),
+            blend_radius_mm=blend_mm,
+            blend_radius_deg=blend_deg,
+            default_velocity_scale=default_scale,
+            trajectory_name=key,
         )
 
-    def _transit_to_stack(name: str) -> py_trees.composites.Sequence:
-        """Turntable→Stack: A holds current angle for first 50%, rotates to 270° in last 50%."""
-        waypoint_x = stack_x + (1.0 - trailing_split) * travel
-        arrive_a_deg = tran_cfg.get("to_stack_arrive_deg", 270.0)
-        return py_trees.composites.Sequence(
-            name=name,
-            memory=True,
-            children=[
-                MoveToPositionAction(
-                    f"{name}_Trail",
-                    node=node,
-                    x_mm=waypoint_x,
-                    z_mm=safe_park["z_mm"],
-                    skip_a=True,
-                ),
-                MoveToPositionAction(
-                    f"{name}_Arrive",
-                    node=node,
-                    x_mm=stack_x,
-                    z_mm=safe_park["z_mm"],
-                    a_deg=arrive_a_deg,
-                    skip_z=True,
-                ),
-            ],
-        )
+    def _transit_to_turntable(name: str) -> ExecuteTrajectoryAction:
+        """Stack→Turntable: velocity-mode X with concurrent Z descent; A rotates at trailing split."""
+        return _load_trajectory(name, "transit_to_turntable")
+
+    def _transit_to_stack(name: str) -> ExecuteTrajectoryAction:
+        """Turntable→Stack: velocity-mode X with concurrent Z rise; A rotates at trailing split."""
+        return _load_trajectory(name, "transit_to_stack")
 
     # ── Homing subtree ────────────────────────────────────────────────────────
 
@@ -225,30 +229,51 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         children=[
             # Wait for operator to press "Start Playing" before touching any disc
             WaitForStartCommand(),
-            # Move directly to stack at safe height with correct A angle
+            # ── Approach stack safely ──────────────────────────────────────────
+            # 1. Position outside stack at safe height with correct A angle.
             MoveToPositionAction(
                 "InitialLoad_Approach",
                 node=node,
-                x_mm=stack_x,
+                x_mm=_x_clear_mm,
                 z_mm=safe_park["z_mm"],
                 a_deg=pos["queue_stack"]["a_deg"],
             ),
-            # Lower to slot 0 (current_record_index starts at 0)
+            # 2. Lower Z to slot TOP envelope (X is at x_clear_mm — safe to move Z freely).
+            DynamicMoveToSlotAction(
+                name="InitialLoad_ZToSlotTop",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            # 3. Enter stack at slot top Z (A stays, Z stays).
+            _stack_approach_x("InitialLoad_ApproachX"),
+            # ── Inside slot: descend → grip → ascend ──────────────────────────
+            # 4. Descend to grip height (bottom of slot envelope).
             DynamicMoveToSlotAction(
                 name="InitialLoad_ZToSlot",
                 node=node,
                 config=config,
                 idx_key=K.CURRENT_RECORD_IDX,
             ),
-            # Pick up (with retry)
+            # 5. Pick up (with retry).
             py_trees.decorators.Retry(
                 child=GripAction(node, close=True, name="InitialLoad_GripClose"),
                 num_failures=config.get("grip", {}).get("retry_max", 3),
                 name="InitialLoad_GripRetry",
             ),
-            # Raise to safe clearance
-            _z_up_to_safe("InitialLoad_ZUp"),
-            # Transit to turntable
+            # 6. Raise back to top of slot envelope before retracting X.
+            DynamicMoveToSlotAction(
+                name="InitialLoad_ZToSlotTop2",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            # ── Exit stack ────────────────────────────────────────────────────
+            # 7. Retract X to safe position (Z now free to move past shelf boundaries).
+            _stack_retract_x("InitialLoad_RetractX"),
+            # ── Transit to turntable ──────────────────────────────────────────
             _transit_to_turntable("InitialLoad_TransitToPlayer"),
             # Place on player
             _z_down_to_platter("InitialLoad_ZDown"),
@@ -295,57 +320,124 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
     # ── Flip subtree ──────────────────────────────────────────────────────────
     # Sequential moves: swing A away → back X → raise Z → check clearance → flip
 
-    ensure_flip_clearance = py_trees.composites.Selector(
-        name="EnsureFlipClearance",
-        memory=False,
-        children=[
-            FlipClearanceCheck(clearance_min_mm),
-            py_trees.composites.Sequence(
-                name="RaiseForClearance",
-                memory=True,
-                children=[
-                    _z_up_to_safe("RaiseForClearance_ZUp"),
-                    FlipClearanceCheck(clearance_min_mm, name="FlipClearanceCheck2"),
-                ],
-            ),
-        ],
-    )
+    def _ensure_flip_clearance(suffix: str = "") -> py_trees.composites.Selector:
+        """Build an EnsureFlipClearance selector.  Call twice to get two independent instances."""
+        return py_trees.composites.Selector(
+            name=f"EnsureFlipClearance{suffix}",
+            memory=False,
+            children=[
+                FlipClearanceCheck(clearance_min_mm, name=f"FlipClearanceCheck{suffix}"),
+                py_trees.composites.Sequence(
+                    name=f"RaiseForClearance{suffix}",
+                    memory=True,
+                    children=[
+                        _z_up_to_safe(f"RaiseForClearance_ZUp{suffix}"),
+                        FlipClearanceCheck(clearance_min_mm, name=f"FlipClearanceCheck2{suffix}"),
+                    ],
+                ),
+            ],
+        )
+
+    def _flip_staging_steps(prefix: str) -> ExecuteTrajectoryAction:
+        """
+        Single trajectory: A swings + Z rises simultaneously (WP0), then X retracts (WP1).
+        Returns one ExecuteTrajectoryAction node — callers use it directly, no unpacking.
+        """
+        return _load_trajectory(f"{prefix}_FlipStage", "flip_staging")
 
     flip_subtree = py_trees.composites.Sequence(
         name="FlipSubtree",
         memory=True,
         children=[
             IsFlipAction(),
-            # Step 1: swing A away from player
-            MoveToPositionAction(
-                name="FlipStage_SwingA",
-                node=node,
-                a_deg=flip_st["a_deg"],
-                skip_x=True,
-                skip_z=True,
-            ),
-            # Step 2: back X away from player
-            MoveToPositionAction(
-                name="FlipStage_BackX",
-                node=node,
-                x_mm=flip_st["x_mm"],
-                skip_z=True,
-                skip_a=True,
-            ),
-            # Step 3: raise Z for clearance
-            MoveToPositionAction(
-                name="FlipStage_RaiseZ",
-                node=node,
-                z_mm=flip_st["z_mm"],
-                skip_x=True,
-                skip_a=True,
-            ),
+            # Steps 1-2: concurrent A+Z, then X retract (2-waypoint trajectory)
+            _flip_staging_steps("FlipStage"),
             # Step 4: verify clearance below arm
-            ensure_flip_clearance,
+            _ensure_flip_clearance(),
             # Step 5: run flip servos
             FlipRecordAction(node),
+            # Step 5b: apply the side change now that the record is physically flipped —
+            # this is what drives the 3D model colour update in the web UI.
+            CommitFlipSideAction(),
             # Step 6: return directly to player approach (arm is at X=700mm, no transit needed)
             _move_to_player_approach("FlipReturnToPlayer"),
+        ],
+    )
+
+    # ── Flip-then-swap subtree ────────────────────────────────────────────────
+    # Used when a B-side record finishes in SEQUENTIAL mode.  The arm flips the
+    # record back to A at the flip staging area, then goes straight to the stack
+    # to deposit it and pick up the next record — no wasted trip back to the player.
+
+    flip_then_swap_subtree = py_trees.composites.Sequence(
+        name="FlipThenSwapSubtree",
+        memory=True,
+        children=[
+            IsFlipThenSwapAction(),
+            # Steps 1-2: concurrent A+Z then X retract (single trajectory)
+            _flip_staging_steps("FTS_FlipStage"),
+            # Step 3: clearance check
+            _ensure_flip_clearance("_FTS"),
+            # Step 4: run flip servos — record is now A-side up
+            FlipRecordAction(node, name="FTS_FlipRecordAction"),
+            # Step 4b: apply side change (current_side → "A")
+            CommitFlipSideAction(name="FTS_CommitFlipSide"),
+            # Step 5: transit to stack — arrives at X=stack_x, Z=slot_top_z[prev], A=arrive_a.
+            DynamicTransitToSlotAction(
+                name="FTS_TransitToDeposit",
+                node=node,
+                config=config,
+                idx_key=K.PREV_RECORD_IDX,
+            ),
+            # ── Deposit old record ────────────────────────────────────────────
+            DynamicMoveToSlotAction(
+                name="FTS_ZDownToDeposit",
+                node=node,
+                config=config,
+                idx_key=K.PREV_RECORD_IDX,
+            ),
+            GripAction(node, close=False, name="FTS_GripOpen"),
+            DynamicMoveToSlotAction(
+                name="FTS_ZUpAfterDeposit",
+                node=node,
+                config=config,
+                idx_key=K.PREV_RECORD_IDX,
+                slot_top=True,
+            ),
+            _stack_retract_x("FTS_RetractX"),
+            # ── Reposition for new slot ───────────────────────────────────────
+            DynamicMoveToSlotAction(
+                name="FTS_ZToNewSlotTop",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            _stack_approach_x("FTS_ApproachX"),
+            # ── Pick up new record ────────────────────────────────────────────
+            DynamicMoveToSlotAction(
+                name="FTS_ZDownToPickup",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+            ),
+            py_trees.decorators.Retry(
+                child=GripAction(node, close=True, name="FTS_GripClose"),
+                num_failures=config.get("grip", {}).get("retry_max", 3),
+                name="FTS_GripCloseRetry",
+            ),
+            # Update current_side to new record's side now that it's in the gripper.
+            SetCurrentSideFromSlotAction(name="FTS_SetCurrentSide"),
+            DynamicMoveToSlotAction(
+                name="FTS_ZUpAfterPickup",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            _stack_retract_x("FTS_RetractAfterPickup"),
+            # ── Return to turntable ───────────────────────────────────────────
+            _transit_to_turntable("FTS_ReturnToPlayer"),
         ],
     )
 
@@ -357,39 +449,69 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             IsSwapAction(),
-            # Ensure Z clearance before moving X toward stack
-            _z_up_to_safe("Swap_ZClear"),
-            # Transit to queue stack — record trails toward turntable,
-            # A rotates to arrival angle (270°) in the last 30% of X travel.
-            _transit_to_stack("Swap_TransitToStack"),
-            # Lower Z to old record's slot (PREV_RECORD_IDX)
-            DynamicMoveToSlotAction(
-                name="Swap_ZToOldSlot",
+            # ── Arrive at old slot (top of envelope) ──────────────────────────
+            # Transit: X vel-, Z→safe_z, A→arrive_a (all concurrent, A done before X<250mm).
+            # Arrives: X=stack_x, Z=slot_top_z[prev], A=arrive_a.
+            DynamicTransitToSlotAction(
+                name="Swap_TransitToDeposit",
                 node=node,
                 config=config,
                 idx_key=K.PREV_RECORD_IDX,
             ),
-            # Deposit old record
-            GripAction(node, close=False, name="Swap_GripOpen"),
-            # Raise Z to clearance between slots
-            _z_up_to_safe("Swap_ZClearAfterDeposit"),
-            # Lower Z to new record's slot (CURRENT_RECORD_IDX, already incremented)
+            # ── Deposit old record ────────────────────────────────────────────
+            # Descend to grip/release height (bottom of slot envelope).
             DynamicMoveToSlotAction(
-                name="Swap_ZToNewSlot",
+                name="Swap_ZDownToDeposit",
+                node=node,
+                config=config,
+                idx_key=K.PREV_RECORD_IDX,
+            ),
+            GripAction(node, close=False, name="Swap_GripOpen"),
+            # Ascend to top of slot envelope before retracting X.
+            DynamicMoveToSlotAction(
+                name="Swap_ZUpAfterDeposit",
+                node=node,
+                config=config,
+                idx_key=K.PREV_RECORD_IDX,
+                slot_top=True,
+            ),
+            # Retract X — Z is now free to move past shelf boundaries.
+            _stack_retract_x("Swap_RetractX"),
+            # ── Reposition for new slot ───────────────────────────────────────
+            # Set Z to new slot's top envelope (X at x_clear_mm, safe).
+            DynamicMoveToSlotAction(
+                name="Swap_ZToNewSlotTop",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            # Enter new slot at top of envelope.
+            _stack_approach_x("Swap_ApproachX"),
+            # ── Pick up new record ────────────────────────────────────────────
+            # Descend to grip height.
+            DynamicMoveToSlotAction(
+                name="Swap_ZDownToPickup",
                 node=node,
                 config=config,
                 idx_key=K.CURRENT_RECORD_IDX,
             ),
-            # Pick up new record (with retry)
             py_trees.decorators.Retry(
                 child=GripAction(node, close=True, name="Swap_GripClose"),
                 num_failures=config.get("grip", {}).get("retry_max", 3),
                 name="Swap_GripCloseRetry",
             ),
-            # Raise Z to full clearance before moving back to turntable
-            _z_up_to_safe("Swap_ZClearWithRecord"),
-            # Transit back to turntable — record trails toward stack,
-            # A rotates to turntable angle (90°) in the last 50% of X travel.
+            # Ascend to top of slot envelope before retracting.
+            DynamicMoveToSlotAction(
+                name="Swap_ZUpAfterPickup",
+                node=node,
+                config=config,
+                idx_key=K.CURRENT_RECORD_IDX,
+                slot_top=True,
+            ),
+            # Retract X — ready for transit.
+            _stack_retract_x("Swap_RetractAfterPickup"),
+            # ── Return to turntable ───────────────────────────────────────────
             _transit_to_turntable("Swap_ReturnToPlayer"),
         ],
     )
@@ -399,7 +521,7 @@ def build_tree(node: Node, config: dict) -> py_trees.behaviour.Behaviour:
     flip_or_swap = py_trees.composites.Selector(
         name="FlipOrSwap",
         memory=False,
-        children=[flip_subtree, swap_subtree],
+        children=[flip_subtree, flip_then_swap_subtree, swap_subtree],
     )
 
     # ── Place record subtree ──────────────────────────────────────────────────

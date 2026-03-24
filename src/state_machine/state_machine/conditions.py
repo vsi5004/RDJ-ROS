@@ -158,6 +158,31 @@ class IsSwapAction(py_trees.behaviour.Behaviour):
         )
 
 
+class IsFlipThenSwapAction(py_trees.behaviour.Behaviour):
+    """Gate: returns SUCCESS only when next_action == 'flip_swap'.
+
+    Used for the SEQUENTIAL B-side case: flip the record back to A side at the
+    flip staging area, then transit to the stack to deposit it and pick the
+    next record — without returning to the player between the two operations.
+    """
+
+    def __init__(self, name: str = "IsFlipThenSwapAction"):
+        super().__init__(name)
+        self._bb = self.attach_blackboard_client(name=name, namespace=_NS)
+        self._bb.register_key(K.NEXT_ACTION, access=py_trees.common.Access.READ)
+
+    def update(self) -> py_trees.common.Status:
+        try:
+            action = self._bb.next_action
+        except KeyError:
+            return py_trees.common.Status.FAILURE
+        return (
+            py_trees.common.Status.SUCCESS
+            if action == "flip_swap"
+            else py_trees.common.Status.FAILURE
+        )
+
+
 class IsHaltRequested(py_trees.behaviour.Behaviour):
     """
     Returns SUCCESS when next_action == 'halt' (all records played).

@@ -110,6 +110,55 @@ motion_coordinator subscribes `/safety/status` (`vinyl_robot_msgs/SafetyStatus`)
 - On estop: write XTARGET = XACTUAL on all axes (immediate deceleration stop).
 - During an active move: if scale drops to 0.25, active VMAX updates to 25%. If scale drops to 0.0, XTARGET = XACTUAL. When scale returns to 1.0, node resumes toward original target from current position.
 
+## Stack Slot Z-Envelope Safety
+
+Each queue stack slot has `shelf_clearance_mm` (20mm) of usable vertical space. Moving Z outside this envelope while X is inside the stack (X < `x_clear_mm` = 250mm) will collide with the shelf above or below.
+
+### Slot geometry
+
+| Slot | `slot_z` (grip height) | `slot_top_z` (entry/exit) |
+|------|------------------------|--------------------------|
+| 0    | 20mm                   | 40mm                     |
+| 1    | 60mm                   | 80mm                     |
+| 2    | 100mm                  | 120mm                    |
+| 3    | 140mm                  | 160mm                    |
+| 4    | 180mm                  | 200mm                    |
+
+`slot_top_z = slot_z + shelf_clearance_mm`. Shelf material occupies [slot_top_z[i], slot_z[i+1]] (20mm thick between each pair).
+
+### Invariants enforced by the behavior tree
+
+1. **Entry** — X approaches stack_x only after Z is set to `slot_top_z` for the target slot (top of envelope). Stack entry is always at the top.
+2. **Descent** — Z lowers to `slot_z` (grip height) only after X=stack_x is confirmed.
+3. **Ascent** — Z raises back to `slot_top_z` before X retracts.
+4. **X retract** — X moves to `x_clear_mm` (250mm) before any Z change that crosses a slot boundary.
+5. **A rotation** — A must not rotate while X < `x_clear_mm`. Stack vertical pillars constrain A in that zone. A rotates to `arrive_a` during the transit (X > 250mm) and is frozen (`skip_a=True`) for all stack entry, descent, ascent, and retract moves.
+
+### Action servers involved
+
+- `DynamicTransitToSlotAction` — 3-waypoint velocity-mode trajectory: Z+A early (X far), Z descend to `slot_top_z`, X final stop. Arrives at `X=stack_x, Z=slot_top_z, A=arrive_a`.
+- `DynamicMoveToSlotAction` — Z-only move (`skip_x, skip_a`). `slot_top=False` targets `slot_z`; `slot_top=True` targets `slot_top_z`.
+- `_stack_approach_x` / `_stack_retract_x` — X-only moves to stack_x / x_clear_mm (`skip_z, skip_a`).
+
+## ExecuteTrajectory Action Server
+
+`vinyl_robot_msgs/action/ExecuteTrajectory` accepts a list of `Waypoint` messages and executes them sequentially with 50 Hz polling. Advance conditions per waypoint:
+
+- **Velocity-mode WP** (`ramp_mode=1` vel+ or `ramp_mode=2` vel−): X runs at cruise speed; advance when X crosses the `x_mm` threshold (and Z+A `in_position` if not skipped)
+- **Position-mode intermediate WP**: advance when all active axes are within `blend_radius_mm` / `blend_radius_deg` — arm redirects mid-deceleration, no stop
+- **Final WP**: waits for full `in_position` on all active axes
+
+### RPDO byte 7 bitfield
+
+Firmware decodes RPDO byte 7 as a packed bitfield:
+
+```
+bits [1:0]: ramp_mode (0=position, 1=vel+, 2=vel-)
+bits [7:2]: dmax_factor (0=use cfg_dmax; 1-63 = factor/64 × cfg_dmax)
+```
+
+`dmax_factor > 0` reduces the deceleration for intermediate waypoints so the axis is still at high speed when the next XTARGET is sent (smoother blending). The mock canopen master masks bits [7:2] before storing `self.ramp_mode`.
+
 ## Pot Sanity Check (Future)
 
 motion_coordinator/diagnostics will periodically read the A axis pot angle from TPDO bytes 6–7, compare to expected angle derived from XACTUAL. Divergence > 5° triggers an EMCY "A axis position divergence" and halts all axes — indicates belt slip or mechanical failure.

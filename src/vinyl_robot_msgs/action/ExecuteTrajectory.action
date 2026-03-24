@@ -1,0 +1,23 @@
+# Goal
+vinyl_robot_msgs/Waypoint[] waypoints
+float64 default_velocity_scale
+float64 blend_radius_mm      # advance when linear axes within this distance of target
+float64 blend_radius_deg     # advance when A within this angle of target
+string  trajectory_name      # for logging
+---
+# Result
+bool    success
+string  error_msg
+float64 x_final_mm
+float64 z_final_mm
+float64 a_final_deg
+int32   waypoints_completed
+---
+# Feedback (~50 Hz)
+float64 x_actual_mm
+float64 z_actual_mm
+float64 a_actual_deg
+int32   current_waypoint_idx
+bool    x_in_position
+bool    z_in_position
+bool    a_in_position

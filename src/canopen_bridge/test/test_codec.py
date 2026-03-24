@@ -304,6 +304,16 @@ class TestStepperRPDODisassembly:
         e = _find_entry(entries, 0x2108)
         assert e["data"] == 2
 
+    def test_stepper_rpdo_disassemble_ramp_byte_dmax_factor_preserved(self):
+        # OD 0x2108 byte 7 carries a bitfield: bits[1:0]=ramp_mode, bits[7:2]=dmax_factor.
+        # The codec is a pass-through — it must preserve the full byte, not just bits[1:0].
+        # Firmware (app_canopen.c) decodes the bitfield; codec must not strip the upper bits.
+        ramp_byte = (4 << 2) | 0  # dmax_factor=4, ramp_mode=position → 0x10
+        raw = build_stepper_rpdo(0, 500, CW_ENABLE, ramp_byte)
+        entries = disassemble_stepper_rpdo(raw)
+        e = _find_entry(entries, 0x2108)
+        assert e["data"] == ramp_byte
+
     def test_stepper_rpdo_disassemble_round_trip(self):
         """build_stepper_rpdo → disassemble → re-pack → equals original bytes."""
         original = build_stepper_rpdo(12000, 800, CW_ENABLE, 1)

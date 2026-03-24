@@ -42,19 +42,21 @@ let swEstopActive = false;
 // ── Robot geometry config (mirrors robot_params.yaml) ─────────────────────────
 
 const CFG = {
-  scale:       0.02,   // Three.js units per mm  (1000 mm → 20 units)
-  xMax:        1050,   // mm
-  zMax:        210,    // mm
-  stackX:      0,      // mm — carriage X when accessing queue stack (at rail start)
-  turntableX:  1050,   // mm — carriage X when accessing turntable (at rail end = xMax)
-  safeParkX:   500,    // mm — safe_park.x_mm
-  platZ:       45,     // mm — turntable.z_platter_mm
-  slotZ:       [20, 60, 100, 140, 180],  // mm — queue_stack.slot_z_mm
-  gripOpenUs:  2000,   // µs
-  gripCloseUs: 1000,   // µs
-  flipAUs:     1500,   // µs — side A
-  flipBUs:     500,    // µs — side B
-  recordR:     152,    // mm — radius of 12" vinyl
+  scale:          0.02,   // Three.js units per mm  (1000 mm → 20 units)
+  xMax:           1050,   // mm
+  zMax:           210,    // mm
+  stackX:         0,      // mm — carriage X when accessing queue stack (at rail start)
+  turntableX:     1050,   // mm — carriage X when accessing turntable (at rail end = xMax)
+  safeParkX:      500,    // mm — safe_park.x_mm
+  platZ:          45,     // mm — turntable.z_platter_mm
+  slotZ:          [20, 60, 100, 140, 180],  // mm — queue_stack.slot_z_mm
+  shelfClearance: 20,     // mm — homing.record_stack.shelf_clearance_mm (slot envelope height)
+  xClearMm:       250,    // mm — homing.record_stack.x_clear_mm (A rotation forbidden below this)
+  gripOpenUs:     2000,   // µs
+  gripCloseUs:    1000,   // µs
+  flipAUs:        1500,   // µs — side A
+  flipBUs:        500,    // µs — side B
+  recordR:        152,    // mm — radius of 12" vinyl
 };
 
 // ── LED Visualizer state ───────────────────────────────────────────────────────
@@ -74,10 +76,11 @@ let controls3d  = null;
 let sceneReady  = false;
 
 // Mesh references updated on every /motion/status message
-let arm3d       = null;   // Group — moves along X rail
-let zCarriage3d = null;   // Mesh inside arm3d — moves along Y (Z axis)
-let aGroup3d    = null;   // Group inside zCarriage3d — rotates around Y (A axis)
-let finger1_3d  = null;   // Gripper finger (updated from pincher TPDO)
+let arm3d        = null;   // Group — moves along X rail
+let zCarriage3d  = null;   // Mesh inside arm3d — moves along Y (Z axis)
+let aGroup3d     = null;   // Group inside zCarriage3d — rotates around Y (A axis)
+let finger1_3d   = null;   // Gripper finger (updated from pincher TPDO)
+let slotEnvelopes = [];    // Per-slot Z-envelope indicator meshes (5 entries)
 let finger2_3d  = null;   // Gripper finger (updated from pincher TPDO)
 let heldRec3d   = null;   // Record disc held by gripper
 
@@ -486,10 +489,12 @@ function initScene() {
   //   turntable at x = railW + shoulderLen  — carriage at X=xMax, A=+90°
   const shoulderLen = 4.5;  // units — must match shoulder geometry below
 
-  // Stack housing — beyond the left end of the rail in X
+  // Stack housing — wireframe so internal shelf and envelope geometry is visible
   const stackWX = -shoulderLen;
-  const stackH = new THREE.Mesh(new THREE.BoxGeometry(0.8, 4.2, 0.8), matRail);
-  stackH.position.set(stackWX, 2.1, 0);
+  const stackHGeo = new THREE.BoxGeometry(0.85, 4.4, 0.85);
+  const stackH = new THREE.Mesh(stackHGeo,
+    new THREE.MeshBasicMaterial({ color: 0x777777, wireframe: true }));
+  stackH.position.set(stackWX, 2.2, 0);
   scene3d.add(stackH);
 
   // Slot discs — horizontal records stacked one above the other
@@ -500,6 +505,41 @@ function initScene() {
     );
     disc.position.set(stackWX, z_mm * CFG.scale, 0);
     scene3d.add(disc);
+  });
+
+  // Shelf plates — 20mm thick horizontal dividers between each slot
+  // Z range: [slot_top_z[i], slot_z[i+1]] = [slot_z+20, next_slot_z] per gap
+  const matShelf = new THREE.MeshPhongMaterial({ color: 0x888888, opacity: 0.85, transparent: true });
+  for (let i = 0; i < CFG.slotZ.length - 1; i++) {
+    const topZ = (CFG.slotZ[i] + CFG.shelfClearance) * CFG.scale;
+    const botZ = CFG.slotZ[i + 1] * CFG.scale;
+    const thickness = botZ - topZ;
+    const shelf = new THREE.Mesh(
+      new THREE.BoxGeometry(0.78, thickness, 0.78),
+      matShelf.clone()
+    );
+    shelf.position.set(stackWX, topZ + thickness / 2, 0);
+    scene3d.add(shelf);
+  }
+
+  // Vertical support pillars flanking the record slots (A rotation hits these when X < x_clear_mm)
+  const matPillar = new THREE.MeshPhongMaterial({ color: 0x666666 });
+  const pillarH = (CFG.slotZ[CFG.slotZ.length - 1] + CFG.shelfClearance * 2) * CFG.scale;
+  [-0.3, 0.3].forEach(zOff => {
+    const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.07, pillarH, 0.07), matPillar);
+    pillar.position.set(stackWX, pillarH / 2, zOff);
+    scene3d.add(pillar);
+  });
+
+  // Per-slot Z-envelope indicators — translucent green bands showing the 20mm safe operating zone.
+  // Highlighted bright green (active slot, Z in bounds) or red (Z outside active slot envelope).
+  slotEnvelopes = CFG.slotZ.map(z_mm => {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x00cc44, opacity: 0.18, transparent: true });
+    const envH = CFG.shelfClearance * CFG.scale;
+    const env = new THREE.Mesh(new THREE.BoxGeometry(0.75, envH, 0.75), mat);
+    env.position.set(stackWX, (z_mm + CFG.shelfClearance / 2) * CFG.scale, 0);
+    scene3d.add(env);
+    return env;
   });
 
   // Turntable platter — beyond the right end of the rail in X
@@ -600,6 +640,31 @@ function update3DFromStatus(msg) {
   arm3d.position.x       = msg.x_mm * CFG.scale;
   zCarriage3d.position.y = msg.z_mm * CFG.scale;
   aGroup3d.rotation.y    = Math.PI - msg.a_deg * Math.PI / 180;
+
+  // Slot Z-envelope highlighting — shows safe operating zone when arm is near stack.
+  // Green = active slot in bounds; red = Z outside active slot envelope; dim = not near stack.
+  const nearStack = msg.x_mm < CFG.xClearMm;
+  slotEnvelopes.forEach((env, i) => {
+    const slotZ    = CFG.slotZ[i];
+    const slotTopZ = slotZ + CFG.shelfClearance;
+    const isActive = (i === currentSlotIdx);
+    const zInBounds = msg.z_mm >= slotZ && msg.z_mm <= slotTopZ;
+
+    if (!nearStack) {
+      env.material.opacity = 0.18;
+      env.material.color.setHex(0x00cc44);
+    } else if (isActive && !zInBounds) {
+      env.material.opacity = 0.70;
+      env.material.color.setHex(0xff2200);   // red: arm inside stack but Z out of slot bounds
+    } else if (isActive) {
+      env.material.opacity = 0.55;
+      env.material.color.setHex(0x00ee55);   // bright green: Z correctly within slot envelope
+    } else {
+      env.material.opacity = 0.08;
+      env.material.color.setHex(0x00cc44);
+    }
+    env.material.needsUpdate = true;
+  });
 }
 
 function updateGripper(s1, _s2) {

@@ -9,32 +9,32 @@ geometry:
 
 positions:
   turntable:
-    x_mm: 950.0
-    z_platter_mm: 45.0         # Height of platter surface above Z home
-    z_approach_mm: 60.0        # Z height to approach from (above platter)
-    a_deg: 90.0                # Arm faces turntable at this angle
+    x_mm: &tt_x 950.0
+    z_platter_mm: &tt_z_platter 45.0   # Height of platter surface above Z home
+    z_approach_mm: &tt_z_approach 60.0 # Z height to approach from (above platter)
+    a_deg: &tt_a 90.0                  # Arm faces turntable at this angle
 
   queue_stack:
-    x_mm: 50.0
+    x_mm: &stack_x 50.0
     slot_z_mm: [20.0, 60.0, 100.0, 140.0, 180.0]   # Z heights per slot
-    a_deg: 300.0               # Arm angle for slot deposit/pickup (0° would hit rear wall)
+    a_deg: &stack_a 300.0              # Arm angle for slot deposit/pickup (0° would hit rear wall)
 
   safe_park:
     x_mm: 500.0
-    z_mm: 120.0
+    z_mm: &safe_z 120.0
     a_deg: 180.0               # Arm points away from both ends
 
   flip_staging:
-    x_mm: 700.0                # Backed away from player (950) — tune at commissioning
-    z_mm: 80.0                 # Raised above approach height (60) — tune at commissioning
-    a_deg: 180.0               # Swung away from player toward safe park angle
+    x_mm: &flip_x 700.0       # Backed away from player (950) — tune at commissioning
+    z_mm: &flip_z 80.0        # Raised above approach height (60) — tune at commissioning
+    a_deg: &flip_a 180.0      # Swung away from player toward safe park angle
 
   transit:
     trailing_split: 0.50       # Fraction of X travel before A rotates to face destination
     to_stack_trail_deg: 90.0   # A while trailing toward stack (record faces toward turntable)
-    to_stack_arrive_deg: 270.0 # A on arrival at stack (record faces away, ready for slot approach)
+    to_stack_arrive_deg: &arrive_stack_a 270.0  # A on arrival at stack (record faces away, ready for slot approach)
     to_turntable_trail_deg: 270.0  # A while trailing toward turntable (record faces toward stack)
-    to_turntable_arrive_deg: 90.0  # A on arrival at turntable (= turntable.a_deg, faces player)
+    to_turntable_arrive_deg: &arrive_tt_a 90.0  # A on arrival at turntable (= turntable.a_deg, faces player)
 
 homing:
   safe_zone:
@@ -116,3 +116,98 @@ led_controller:
   flash_period_s: 0.5          # SAFETY_WARNING/FAULT flash cycle period
   safety_warning_threshold: 1.0  # velocity_scale below this triggers orange override
   fade_in_speed: 0.15          # per-frame alpha increment as axis passes each LED (0.0–1.0)
+  motion_hold_s: 0.8           # keep MOVING pattern for this long after axes stop (bridges inter-node gaps)
+
+# ── Trajectory definitions ────────────────────────────────────────────────────
+# Loaded by tree_builder.py at startup. Edit and restart nodes — no rebuild needed.
+# Position values use YAML anchors defined in positions: above (single source of truth).
+# ramp_mode: position | vel_pos | vel_neg  (Python normalises strings to 0/1/2)
+# dmax_factor: 0 = use configured DMAX; 1-63 = factor/64 * DMAX (controls blend softness)
+
+trajectories:
+  # ── Global defaults ────────────────────────────────────────────────────────
+  blend_radius_mm: &blend_mm 20.0
+  blend_radius_deg: &blend_deg 15.0
+  default_velocity_scale: 1.0
+
+  # ── Flip staging: swing A + raise Z simultaneously, then retract X ─────────
+  # Z is safe to rise at turntable X (950mm) — clears platter at 45mm with margin.
+  flip_staging:
+    blend_radius_mm: *blend_mm
+    blend_radius_deg: 10.0    # tighter: A must reach 170° (clear of player) before X starts
+    waypoints:
+      - z_mm: *flip_z         # A swings to 180° and Z rises to 80mm simultaneously
+        a_deg: *flip_a
+        skip_x: true
+        dmax_factor: 4        # ~6% DMAX — A still coasting fast when X blend fires
+      - x_mm: *flip_x         # X retracts to flip staging position; full stop
+        skip_z: true
+        skip_a: true
+        dmax_factor: 0
+
+  # ── Transit stack→turntable: X velocity+ with Z descent, then A rotates ───
+  # x_mm of WP0 = tt_x - (1-trailing_split)*(tt_x-stack_x)
+  # With tt_x=950, stack_x=50, split=0.50: 950 - 0.50*900 = 500mm. Update if positions change.
+  transit_to_turntable:
+    blend_radius_mm: *blend_mm
+    blend_radius_deg: *blend_deg
+    waypoints:
+      - x_mm: 500.0
+        z_mm: *tt_z_approach
+        skip_a: true
+        ramp_mode: vel_pos    # X runs at cruise speed; advance when x_pos >= 500mm
+      - x_mm: *tt_x
+        a_deg: *arrive_tt_a
+        skip_z: true
+        ramp_mode: position   # X switches to precise stop; A rotates to face player
+
+  # ── Transit turntable→stack: X velocity- with Z rise + A rotation, then final stop ─
+  # WP0: X vel-, Z rises to safe height, A rotates to arrive angle.
+  #   A rotation completes while X >> 250mm (stack pillar danger zone).
+  #   Advance when X <= 500mm AND Z in_position AND A in_position.
+  # WP1: X position to stack_x. Z and A frozen. Full stop.
+  # x_mm of WP0 = trailing-split threshold (same as before; A rotation just added).
+  # With stack_x=50, tt_x=950, split=0.50: threshold = 500mm.
+  transit_to_stack:
+    blend_radius_mm: *blend_mm
+    blend_radius_deg: *blend_deg
+    waypoints:
+      - x_mm: 500.0
+        z_mm: *safe_z
+        a_deg: *arrive_stack_a  # A rotates here — completes before X reaches 250mm
+        ramp_mode: vel_neg      # X runs toward stack; advance when x_pos <= 500mm AND A done
+      - x_mm: *stack_x
+        skip_z: true
+        skip_a: true
+        ramp_mode: position
+
+  # ── Transit turntable→stack with concurrent Z slot pre-descent ─────────────
+  # Used by DynamicTransitToSlotAction. slot_z_mm is injected at runtime from blackboard.
+  # stack_z_pre_descent_x_mm: X distance from stack where Z starts descending.
+  #   At 200mm/s X cruise: 300mm → 1.5s for Z to reach slot (max 100mm/100mm/s = 1.0s).
+  transit_to_slot:
+    blend_radius_mm: *blend_mm
+    blend_radius_deg: *blend_deg
+    # stack_z_pre_descent_x_mm: X distance from stack where WP0 blend fires.
+    # Worst-case Z travel: |safe_z(120) - slot_top_z_extreme(40 or 200)| = 80mm @ 100mm/s = 0.8s
+    # X must not enter danger zone (X<200mm) before Z + A complete.
+    # At 200mm/s X: need (pre_x - 200) / 200 >= 0.8s → pre_x >= 360mm → use 400mm for margin.
+    stack_z_pre_descent_x_mm: 400.0
+    waypoints:
+      # WP0: X vel-, Z rises to safe height, A rotates to arrive angle.
+      #   A completes before X reaches 250mm (pillar danger zone) — see timing analysis in plan.
+      #   Advance when X <= 450mm AND Z in_position AND A in_position.
+      - x_mm: 450.0                    # = stack_x + stack_z_pre_descent_x_mm = 50 + 400
+        z_mm: *safe_z
+        a_deg: *arrive_stack_a         # A rotation happens here — early, while X is far from stack
+        ramp_mode: vel_neg
+      # WP1: X vel- continues, Z descends to slot_top_z (filled at runtime). Advance near stack.
+      - x_mm: 70.0                     # = stack_x + blend_radius_mm = 50 + 20
+        z_mm: dynamic                  # DynamicTransitToSlotAction fills with slot_z + shelf_clearance
+        skip_a: true
+        ramp_mode: vel_neg
+      # WP2: X position final stop. Z and A frozen. Arrives at X=stack_x, Z=slot_top_z, A=arrive_a.
+      - x_mm: *stack_x
+        skip_z: true
+        skip_a: true
+        ramp_mode: position

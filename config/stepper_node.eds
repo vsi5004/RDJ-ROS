@@ -425,9 +425,11 @@ DefaultValue=0xFFFF
 PDOMapping=1
 
 [2108]
-ParameterName=Ramp mode (0=pos, 1=vel+, 2=vel-)
+ParameterName=Ramp Mode and DMAX Factor
 ObjectType=0x7
 DataType=0x0005
 AccessType=rw
 DefaultValue=0x00
 PDOMapping=1
+; bits[1:0] = ramp mode (0=position, 1=vel+, 2=vel-)
+; bits[7:2] = dmax_factor (0=default; 1-63 = factor/64 * DMAX, position mode only)

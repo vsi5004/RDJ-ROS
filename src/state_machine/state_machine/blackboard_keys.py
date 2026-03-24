@@ -26,7 +26,12 @@ CURRENT_SIDE = "current_side"  # str: "A" | "B"
 QUEUE_SIZE = "queue_size"  # int: total records in queue
 
 # Decision output (written by DecideAction, read by FlipOrSwap gates)
-NEXT_ACTION = "next_action"  # str: "flip" | "swap" | "halt" | ""
+NEXT_ACTION = "next_action"  # str: "flip" | "swap" | "flip_swap" | "halt" | ""
+
+# Target side after the pending flip servo motion.  Written by DecideAction for
+# any "flip" or "flip_swap" decision; read and applied by CommitFlipSideAction
+# AFTER FlipRecordAction completes so the web UI updates at the right time.
+NEXT_FLIP_SIDE = "next_flip_side"  # str: "A" | "B"
 
 # Set True by the "home" user command; cleared by ClearForceRehomeAction after
 # HomeAllAction succeeds.  Keeps IsAllHomed returning FAILURE until homing

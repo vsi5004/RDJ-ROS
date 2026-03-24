@@ -65,7 +65,7 @@ class MockStepperNode:
         target = struct.unpack_from("<i", data, 0)[0]
         vmax = struct.unpack_from("<H", data, 4)[0]
         ctrl = data[6]
-        ramp_mode = data[7]
+        ramp_mode = data[7] & 0x03  # bits[1:0] = ramp_mode; bits[7:2] = dmax_factor (firmware-only)
 
         if ctrl & CW_CLEAR_FAULT:
             self.fault = False

@@ -11,12 +11,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SafetyStatus.msg"
   "msg/StateMachineStatus.msg"
   "msg/AlbumMetadata.msg"
+  "msg/Waypoint.msg"
   "action/MoveToPosition.action"
   "action/HomeAll.action"
   "action/Grip.action"
   "action/FlipRecord.action"
   "action/PressPlay.action"
   "action/SetSpeed.action"
+  "action/ExecuteTrajectory.action"
   DEPENDENCIES std_msgs action_msgs
 )
 

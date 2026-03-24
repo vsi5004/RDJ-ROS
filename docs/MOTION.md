@@ -74,11 +74,11 @@ Execute: retract X only (Z and A frozen) at 5 mm/s until X > `x_clear_mm`, then 
 
 **Phase 2 — X to safe zone**: Check if A is pointing toward a wall (outside `min_safe_deg`–`max_safe_deg`). If unsafe AND X not in safe zone: move Z to max height, rotate A to park (180°) at 5°/s. Then move X to safe zone centre at 20 mm/s.
 
-**Phase 3 — Home A axis**: X in safe zone, Z high. Send home command, wait for `homed` status bit, then move to 180° park position.
+**Phase 3 — Home A axis**: X in safe zone, Z high. Send home command, wait for `homed` status bit, then move directly to `a_x_homing_deg` (90°, faces turntable). Skips the intermediate 180° park to avoid an unnecessary extra move.
 
-**Phase 4 — Home X axis**: A parked, Z high. Home to endstop at 40 mm/s. After, move to safe zone centre.
+**Phase 4 — Home X axis**: A is at 90° — arm points toward the turntable, clearing the stack structure as X homes to endstop at 40 mm/s. A=180° (park) risks clipping the stack. After, move X to safe zone centre.
 
-**Phase 5 — Home Z axis**: All positions known. Home Z upward to endstop at 20 mm/s, lower to `z_clear_mm`.
+**Phase 5 — Home Z axis**: Rotate A back to 180° (park). Home Z upward to endstop at 20 mm/s, lower to `z_clear_mm`.
 
 **Phase 6 — Done**: Publish `HomeAll.Feedback(current_phase='done', axes_homed=0b111)`, return True.
 

@@ -41,7 +41,8 @@ homing:
     x_min_mm: 300.0
     x_max_mm: 700.0
     z_clear_mm: 120.0          # Z height that clears turntable and stack
-    a_park_deg: 180.0
+    a_park_deg: 180.0          # Park/idle angle — perpendicular, away from both stations
+    a_x_homing_deg: 90.0       # A angle during X homing — faces turntable, arm away from stack end
 
   turntable:
     x_center_mm: 950.0

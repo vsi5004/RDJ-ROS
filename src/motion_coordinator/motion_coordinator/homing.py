@@ -7,9 +7,9 @@ Runs as a blocking function inside the HomeAll action server callback thread.
 Phase 0 — Assess:         read all sensors, classify regime
 Phase 1 — Z safe height:  lift Z to clear height (skip if already high)
 Phase 2 — X to safe zone: move X to middle; handle dangerous A first
-Phase 3 — Home A:         run A axis homing to endstop, park at 180°
-Phase 4 — Home X:         run X axis homing to endstop, move to safe zone
-Phase 5 — Home Z:         run Z axis homing to endstop, lower to clear height
+Phase 3 — Home A:         run A axis homing to endstop, move directly to 90° (skip 180° park)
+Phase 4 — Home X:         A at 90°, home X to endstop, move to safe zone
+Phase 5 — Home Z:         rotate A back to 180° (park), home Z to endstop, lower to clear height
 Phase 6 — Done
 """
 
@@ -225,21 +225,24 @@ def run_homing(node: "MotionCoordinatorNode", goal_handle) -> bool:
         time.sleep(0.05)
         elapsed += 0.05
 
-    # Park A at 180°
-    park_deg = cfg["safe_zone"]["a_park_deg"]
+    # Move A directly to x_homing_deg (90°) — faces turntable, arm away from stack end.
+    # Skip the intermediate 180° park; go straight from 0° endstop to 90° for X homing.
+    x_homing_a_deg = cfg["safe_zone"].get("a_x_homing_deg", 90.0)
     a_vmax = node.mmps_to_vmax("a_axis", vel["a_normal_home_dps"])
     node.send_rpdo_stepper(
         "a_axis",
-        target_steps=node.deg_to_steps(park_deg),
+        target_steps=node.deg_to_steps(x_homing_a_deg),
         vmax=a_vmax,
         ctrl_word=CW_ENABLE,
         ramp_mode=RAMP_POSITION,
     )
     _wait_in_position(node, "a_axis", timeout=10.0)
-    node.get_logger().info(f"[homing] A homed and parked at {park_deg}°")
+    node.get_logger().info(f"[homing] A homed, moved to {x_homing_a_deg}° for X homing")
     publish("a_homing", axes_homed=0b100)
 
     # ─── Phase 4: Home X ──────────────────────────────────────────────────────
+    # A is at 90° (faces turntable) — arm clears the stack end during X homing.
+
     publish("x_homing", axes_homed=0b100)
     x_vmax = node.mmps_to_vmax("x_axis", vel["x_home_mmps"])
     node.send_rpdo_stepper(
@@ -273,6 +276,18 @@ def run_homing(node: "MotionCoordinatorNode", goal_handle) -> bool:
     publish("x_homing", axes_homed=0b101)
 
     # ─── Phase 5: Home Z ──────────────────────────────────────────────────────
+    # Rotate A back to park (180°) before homing Z — safer for upward movement.
+    park_deg = cfg["safe_zone"]["a_park_deg"]
+    a_vmax = node.mmps_to_vmax("a_axis", vel["a_normal_home_dps"])
+    node.send_rpdo_stepper(
+        "a_axis",
+        target_steps=node.deg_to_steps(park_deg),
+        vmax=a_vmax,
+        ctrl_word=CW_ENABLE,
+        ramp_mode=RAMP_POSITION,
+    )
+    _wait_in_position(node, "a_axis", timeout=10.0)
+
     publish("z_homing", axes_homed=0b101)
     z_vmax = node.mmps_to_vmax("z_axis", vel["z_home_mmps"])
     node.send_rpdo_stepper(
